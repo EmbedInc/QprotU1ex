@@ -1,0 +1,931 @@
+;   Host command processor.  The routines in this module interpret and  process
+;   the command stream coming from the host computer via the USB.
+;
+/include "u1ex.ins.aspic"
+/include "u1ex_usb.ins.aspic"
+
+         extern  currtask    ;0-N number of the currently running task
+         extern_flags        ;declare global flag bits EXTERN
+
+;*******************************************************************************
+;
+;   Configuration constants.
+;
+stacksz  equ     64          ;size of command processor data stack
+bufsz    equ     64          ;size of local buffer used by individual commands
+lbank    equ     1           ;register bank for the local state of this module
+;
+;   Derived constants.
+;
+lbankadr equ     bankadr(lbank) ;address within local state register bank
+
+;*******************************************************************************
+;
+;   Global state.  All this state is assumed to be in the GBANK register
+;   bank by other modules.
+;
+         defram  gbankadr
+
+;*******************************************************************************
+;
+;   Local state.
+;
+         defram  lbankadr
+
+cmdtask  res     1           ;ID of the command processing task
+buf      res     bufsz       ;scratch buffer, used separately each command
+;
+;   The command processor stack goes in its own data section so that the linker
+;   has more freedom in placing it.
+;
+.cmdstack udata
+cmdstack res     stacksz     ;command processing task data stack
+
+
+.cmd     code
+
+;*******************************************************************************
+;
+;   Subroutine CMD_INIT
+;
+;   Initialize the hardware and software state managed by this module.
+;
+         glbsub  cmd_init, noregs
+
+         dbankif lbankadr
+         setf    cmdtask     ;init to command processing task is not running
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Local subroutine YIELD
+;
+;   Let other tasks run for a time slice.  In addition, this routine restarts
+;   the command processing logic if a USB reset was received.  That means the
+;   previous command stream was aborted and a new one has been started.
+;
+;   Since this routine calls TASK_YIELD, all registers not listed in TSKSAVE are
+;   trashed.
+;
+         locsub  yield, noregs
+
+         gcall   task_yield  ;give other tasks a chance to run
+
+         dbankif gbankadr
+         btfsc   flag_cmdreset ;don't need to reset the command processor ?
+         jump    task_restart ;reset the command processor
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Local subroutine GET_BYTE
+;
+;   Get the next input byte into REG0.  This subroutine will not return until an
+;   input byte is available.  Only the registers listed in TSKSAVE will be
+;   preserved.  Other tasks will be run while waiting for a new input byte to
+;   become available.  A YIELD is guaranteed to be performed at least once.
+;
+         locsub  get_byte, regf1
+
+gbloop   unbank              ;back here until input byte is available
+         popregs savedregs
+         mcall   yield       ;give other tasks a chance to run
+         pushregs savedregs
+         dbankif gbankadr
+         clrf    reg1        ;indicate to transfer byte if one is available
+         gcall   usb_get1    ;try to get a byte from the USB
+         btfsc   reg1, usbs_noxf ;we got a byte ?
+         jump    gbloop      ;no, go back and try again
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Macro GETBYTE
+;
+;   Call GET_BYTE, which is defined immediately above.  This macro is to make it
+;   easier to exchange code with other firmware that does not use a subroutine
+;   to get the next byte.
+;
+;   Registers not listed in MSKSAVE may be trashed.
+;
+getbyte  macro
+         mcall   get_byte    ;get the next byte into REG0
+         endm
+
+;*******************************************************************************
+;
+;   Local subroutine GET16
+;
+;   Get the next 2 input bytes as a 16 bit value and return it in REG1:REG0.
+;   The input bytes are assumed to be in low to high byte order.
+;
+         locsub  get16, noregs
+
+         getbyte             ;get low byte into REG0
+         pushreg reg0        ;temp save it on the stack
+         getbyte
+         movff   reg0, reg1
+
+         popreg  reg0        ;restore low byte into REG0
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Local subroutine GET24
+;
+;   Get the next 3 input bytes as a 24 bit value and return it in
+;   REG2:REG1:REG0.  The input bytes are assumed to be in low to high byte
+;   order.
+;
+         locsub  get24, noregs
+
+         getbyte             ;get low byte into REG0
+         pushreg reg0        ;temp save it on the stack
+         getbyte
+         movff   reg0, reg1
+         getbyte
+         movff   reg0, reg2
+
+         popreg  reg0        ;restore low byte into REG0
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Local subroutine GET32
+;
+;   Get the next 4 input bytes as a 32 bit value and return it in
+;   REG3:REG2:REG1:REG0.  The input bytes are assumed to be in low to high byte
+;   order.
+;
+         locsub  get32, noregs
+
+         getbyte             ;get low byte into REG0
+         pushreg reg0        ;temp save it on the stack
+         getbyte
+         movff   reg0, reg1
+         getbyte
+         movff   reg0, reg2
+         getbyte
+         movff   reg0, reg3
+
+         popreg  reg0        ;restore low byte into REG0
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Local subroutine GETBUF
+;
+;   Get a sequence of input bytes into the local buffer BUF.  The number of
+;   bytes to read is in REG1.  All these bytes will be read, but only the first
+;   BUFSZ bytes will be saved in the buffer.  REG2 is returned the number of
+;   bytes saved into the buffer.
+;
+         locsub  getbuf, regf0 | regf1
+
+         clrf    reg2        ;init number of bytes in the buffer
+         movf    reg1
+         bz      gb_leave    ;no bytes to read, all done ?
+
+         lfsr    0, buf      ;init write pointer to start of buffer
+gb_loop  unbank              ;back here each new byte
+         pushreg fsr0l       ;temp save buffer pointer
+         pushreg fsr0h
+         getbyte             ;get this byte into REG0
+         popreg  fsr0h       ;restore buffer write pointer
+         popreg  fsr0l
+         movf    reg2, w     ;get number of bytes already in buffer
+         sublw   bufsz-1     ;compare to limit
+         skip_wle            ;still room in the buffer ?
+         jump    gb_full     ;no, skip writing the byte
+         movff   reg0, postinc0 ;stuff the byte into the buffer
+         incf    reg2        ;count one more byte in the buffer
+gb_full                      ;done with writing byte to buffer
+         decfsz  reg1        ;count one less byte left to do
+         jump    gb_loop     ;back to do the next byte
+
+gb_leave unbank
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine CMD_LOCK
+;
+;   Acquire exclusive access to sending to the host.  The lock must be held
+;   while sending a response to guarantee the bytes from responses from multiple
+;   tasks do not get interleaved.
+;
+         glbsub  cmd_lock, noregs
+
+lck_loop unbank
+         dbankif gbankadr
+         btfss   flag_rsp_lock ;lock not available now ?
+         jump    lck_ready   ;lock is available
+         gcall   task_yield_save ;let all other tasks run for a bit
+         jump    lck_loop    ;back and check lock again
+
+lck_ready dbankis gbankadr   ;the lock is available
+         bsf     flag_rsp_lock ;grab the lock
+
+         dbankif lbankadr
+         movf    cmdtask, w  ;get the ID of the command processing task
+         dbankif gbankadr
+         xorwf   currtask, w ;compare to ID of the current task
+         skip_nz             ;this is not command processor ?
+         bsf     flag_cmd_rsplock ;indicate command processor has the response lock
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine CMD_UNLOCK
+;
+;   Release the exclusive lock on sending to the host.
+;
+         glbsub  cmd_unlock, noregs
+
+         dbankif gbankadr
+         bcf     flag_rsp_lock ;response stream is not locked
+         bcf     flag_cmd_rsplock ;command processing task doesn't have the lock
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine SEND_BYTE_IF
+;
+;   Send the byte in REG0 to the host if that can be done immediately.  The Z
+;   flag is cleared if the byte was sent and set if not.  Either way, this
+;   routine always returns "quickly" without waiting on any events.
+;
+send_byte_if glbsub regf1
+
+         loadk8  reg1, (1 << usbc_nflu) ;do not do deliberate flush
+         gcall   usb_put1    ;try to send the byte
+         bcf     status, z   ;init to the byte was sent
+         btfsc   reg1, usbs_noxf ;the byte really was sent ?
+         bsf     status, z   ;no, indicate not sent
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine SEND_BYTE
+;
+;   Send the byte in REG0 to the host.  The caller must have the response stream
+;   locked, which is done with CMD_LOCK.  This routine waits until it is
+;   possible to send a byte.
+;
+;   The byte is sent without the output buffer being flushed.  This is
+;   appropriate when it is known more bytes will follow quickly, or FLUSH will
+;   be called after the last byte.
+;
+send_byte glbsub regf1
+
+sb_loop  unbank              ;back here if not able to send byte
+         loadk8  reg1, (1 << usbc_nflu) ;do not do deliberate flush
+         gcall   usb_put1    ;try to send the byte
+         btfss   reg1, usbs_noxf ;the byte was not written ?
+         jump    sb_leave    ;the byte was written, all done
+
+         gcall   task_yield_save ;give other task a chance to run
+         jump    sb_loop     ;go back and try again
+
+sb_leave unbank
+         leaverest
+
+;*******************************************************************************
+;
+;   Local subroutine PUT_BYTE
+;
+;   Send the byte in REG0 as a response byte to the host.  Registers not listed
+;   in TSKSAVE may be trashed.
+;
+         locsub  put_byte, regf1
+
+pb_loopu unbank              ;back here to retry sending byte via USB
+         clrf    reg1        ;indicate to tranfer byte if possible
+         gcall   usb_put1    ;try to send the byte
+         btfss   reg1, usbs_noxf ;the byte was not sent ?
+         jump    pb_leave    ;the byte was sent
+
+         popregs savedregs
+         mcall   yield       ;give other tasks a chance to run
+         pushregs savedregs
+         jump    pb_loopu
+
+pb_leave unbank              ;common exit point
+         leaverest
+
+;*******************************************************************************
+;
+;   Macro SENDBYTE
+;
+;   Send the byte in REG0 as a response to the current command.  This macro
+;   provides a means to customize the code for sending a byte depending on
+;   implementation.  Some implementations may not use a subroutine to send a
+;   byte.  Command code should use SENDBYTE instead of the PUT_BYTE subroutine.
+;
+;   Registers not listed in MSKSAVE may be trashed.
+;
+sendbyte macro
+         mcall   put_byte
+         endm
+
+;*******************************************************************************
+;
+;   Macro SENDK const
+;
+;   Send the indicated 8 bit constant value to the host.
+;
+;   W, REG0, and the current bank setting are trashed.  All registers not listed
+;   in MSKSAVE may be trashed.
+;
+sendk    macro   const
+         loadk8  reg0, const
+         sendbyte
+         endm
+
+;*******************************************************************************
+;
+;   Subroutine CMD_START
+;
+;   Start up host command processing.  This routine launches a new task to
+;   perform the host command processing, then returns.
+;
+         glbsub  cmd_start, regf0 | regf1 | regf2 | regf3
+
+         task_create cmd_task, cmdstack ;start the host command processing task
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Command task.
+;
+cmd_task unbank              ;task start point
+         movff   currtask, cmdtask ;save ID of the command processing task
+;
+;   Command processor restart point.  This entry point can be called or jumped
+;   to in any state, including with the call and data stacks not empty.
+;
+task_restart unbank          ;will restart here on a USB reset
+         dbankif stkptr
+         clrf    stkptr      ;reset the call stack to empty
+         stack_set cmdstack  ;reset the data stack to empty
+         dbankif gbankadr
+         bcf     flag_cmdreset ;clear any pending reset
+;
+;   Initialize command processing state for after a USB reset.
+;
+         ;
+         ;   Release the lock on the response stream to the host if it is held
+         ;   by this task.
+         ;
+         dbankif gbankadr
+         btfss   flag_cmd_rsplock ;response stream locked by this task ?
+         jump    no_rsplock  ;no
+         mcall   cmd_unlock  ;release lock on the response stream
+no_rsplock unbank
+         ;
+         ;   Release the NAME_GET_xxx routines if locked by this task.
+         ;
+         dbankif gbankadr
+         btfss   flag_namegcmd ;this task has NAME_GET locked ?
+         jump    no_nameglock ;no
+         bcf     flag_namegcmd ;indicate no longer locked
+         gcall   name_get_end ;release the lock
+no_nameglock unbank
+         ;
+         ;   Release the NAME_SET_xxx routines if locked by this task.
+         ;
+         dbankif gbankadr
+         btfss   flag_namescmd ;this task has NAME_SET locked ?
+         jump    no_nameslock ;no
+         bcf     flag_namescmd ;indicate no longer locked
+         gcall   name_set_end ;release the lock
+no_nameslock unbank
+;
+;   Wait for the USB to be usable before attempting to do USB I/O.
+;
+cmd_waitusb unbank
+         mcall   yield       ;give other tasks a chance to run
+         dbankif gbankadr
+         btfss   flag_usbon  ;USB is ready for app use ?
+         jump    cmd_waitusb ;no, go back and check again
+;
+;   Command routines jump here when done.
+;
+cmd_done unbank              ;done successfully processing last command
+         dbankif stkptr
+         clrf    stkptr      ;reset the call stack to empty
+         stack_set cmdstack  ;reset the data stack to empty
+;
+;   Process next command.
+;
+cmd_next unbank              ;back here to interpret next byte as command opcode
+         getbyte             ;get the next opcode byte into REG0
+         dispatch cmd_table  ;jump to the selected command routine
+         jump    cmd_next    ;not a valid opcode, back to get next
+
+;*******************************************************************************
+;
+;   Command FWVER
+;
+;   Returns the 1-255 firmware version and sequence numbers.
+;
+cm_fwver unbank
+
+         sendk   rsp_fwver   ;FWVER response opcode
+         sendk   fwver       ;1-255 firmware version number
+         sendk   fwseq       ;1-255 firmware sequence number
+
+         jump    cmd_done    ;done processing this command
+
+;*******************************************************************************
+;
+;   Command NAMESET n chars
+;
+;   Set the user-settable name of this unit in non-volatile memory.
+;
+cm_nameset unbank
+         getbyte             ;get number of characters+1 into REG2
+         incf    reg0, w
+         movwf   reg2
+
+         gcall   name_set_start ;init for writing user-settable name
+         dbankif gbankadr
+         bsf     flag_namescmd ;command processor has NAME_SET_xxx locked
+
+nameset_loop unbank          ;back here each new name character
+         dcfsnz  reg2        ;count one less character left to do
+         jump    nameset_done ;done all the characters
+         getbyte             ;get this name character into REG0
+         gcall   name_set_char ;add it to end of name string
+         jump    nameset_loop ;back to do next char
+
+nameset_done unbank          ;done with all the name characters
+         gcall   name_set_end ;close writing the name
+         dbankif gbankadr
+         bcf     flag_namescmd ;indicate not holding NAME_SET lock
+         jump    cmd_done    ;done processing this command
+
+;*******************************************************************************
+;
+;   Command NAMEGET
+;
+;   Sends NAME response to indicate the user-settable unit name.
+;
+cm_nameget unbank
+         sendk   rsp_name    ;send NAME response opcode
+
+         gcall   name_get_start ;init for reading the user-settable name
+         dbankif gbankadr
+         bsf     flag_namegcmd ;indicate we have NAME_GET lock
+         incf    reg0, w     ;init number of chars+1 loop counter in REG2
+         movwf   reg2
+         sendbyte            ;send the string length byte
+
+nameget_loop unbank          ;back here each new name character
+         dcfsnz  reg2        ;count one less character left to do
+         jump    nameget_done ;done all the characters
+         gcall   name_get_char ;get this name character into REG0
+         sendbyte            ;send it
+         jump    nameget_loop ;back to do next name character
+
+nameget_done unbank          ;done with all the name characters
+         gcall   name_get_end ;done getting the name string
+         dbankif gbankadr
+         bcf     flag_namegcmd ;indicate not holding NAME_GET lock
+         jump    cmd_done    ;done processing this command
+
+;*******************************************************************************
+;
+;   Command SETB val
+;
+;   Drive port B with the 8 bit value VAL.
+;
+cm_setb  unbank
+         getbyte             ;get VAL into REG0
+         movff   reg0, latb  ;write the value to port B
+         jump    cmd_done    ;done processing this command
+
+;*******************************************************************************
+;
+;   Command SPI1 nbits dat32
+;
+cm_spi1  unbank
+         getbyte             ;get the number of data bits
+         movff   reg0, reg4  ;save it
+         movff   reg0, reg6
+         mcall   get32       ;get the 32 bit data word into REG3:REG2:REG1:REG0
+
+         movf    reg4, w     ;get the number of data bits
+         sublw   32          ;make number of of unused bits in 32 bit word
+         skip_wle            ;number of data bits is within range ?
+         jump    cmd_done    ;no, ignore the command
+
+         movwf   reg5        ;init number of bits left to shift data word
+spi1_shft unbank             ;back here to shift data word each new bit
+         movf    reg5
+         bz      spi1_dshft  ;done shifting first bit into MSB ?
+         bcf     status, c   ;shift the word left one bit
+         rlcf    reg0
+         rlcf    reg1
+         rlcf    reg2
+         rlcf    reg3
+         decf    reg5        ;count one less bit left to do
+         jump    spi1_shft   ;back to shift next bit left
+spi1_dshft unbank            ;done shifting input data to start in the MSB
+;
+;   Start the SPI sequence.
+;
+         set_spiclk_off      ;init the clock line low
+         nop
+         nop
+         nop
+         set_ss1_on          ;assert slave select
+;
+;   Transfer each bit.  The outgoing data has been normalized into the high bits
+;   of REG3-REG0.  As these are shifted out the MSB, the received bits are
+;   shifted into the LSB.  The unused low bits of REG3-REG0 are guaranteed to be
+;   0 currently.  REG4 and REG6 contain the number of bits to transfer, which is
+;   guaranteed to be in the range of 0 to 32.  REG6 must be preserved by this
+;   section.
+;
+spi1_bit unbank              ;back here to transfer each new bit both ways
+         movf    reg4
+         bz      spi1_dbit   ;done transferring all bits ?
+
+         btfss   reg3, 7
+         set_spiout_off      ;output is 0 this bit
+         btfsc   reg3, 7
+         set_spiout_on       ;output is 1 this bit
+
+         rlcf    reg0        ;shift out old bit, make room for new received bit
+         rlcf    reg1
+         rlcf    reg2
+         rlcf    reg3
+
+         set_spiclk_on       ;raise clock, data gets transferred on this edge
+         bcf     reg0, 0     ;init received bit to 0
+         btfsc   spiin_reg, spiin_bit ;input bit really is 0 ?
+         bsf     reg0, 0     ;no, set it to 1
+         decf    reg4        ;count one less bit left to transfer
+         nop
+         nop
+         nop
+         set_spiclk_off      ;end this clock pulse
+         jump    spi1_bit    ;back to do next bit
+
+spi1_dbit unbank             ;done transferring all the data bits
+         nop
+         nop
+         nop
+         set_ss1_off         ;de-assert slave select
+         set_spiout_off      ;lower the data line, doesn't matter, for debugging
+;
+;   The SPI frame has been completed and the received data is in the low bits of
+;   REG3-REG0 with the upper unused bits set to 0.  The number of data bits is
+;   in REG6.
+;
+         movff   reg0, reg4  ;save low byte of data word
+         mcall   cmd_lock    ;lock exclusive access to the response stream
+         sendk   rsp_spi1    ;send response opcode
+         movff   reg6, reg0  ;send the number of data bits
+         sendbyte
+         movff   reg4, reg0  ;send the 32 bit data word
+         sendbyte
+         movff   reg1, reg0
+         sendbyte
+         movff   reg2, reg0
+         sendbyte
+         movff   reg3, reg0
+         sendbyte
+         mcall   cmd_unlock  ;release lock on the host response stream
+         jump    cmd_done
+
+;*******************************************************************************
+;
+;   Command SPI2 nbits dat32
+;
+cm_spi2  unbank
+         getbyte             ;get the number of data bits
+         movff   reg0, reg4  ;save it
+         movff   reg0, reg6
+         mcall   get32       ;get the 32 bit data word into REG3:REG2:REG1:REG0
+
+         movf    reg4, w     ;get the number of data bits
+         sublw   32          ;make number of of unused bits in 32 bit word
+         skip_wle            ;number of data bits is within range ?
+         jump    cmd_done    ;no, ignore the command
+
+         movwf   reg5        ;init number of bits left to shift data word
+spi2_shft unbank             ;back here to shift data word each new bit
+         movf    reg5
+         bz      spi2_dshft  ;done shifting first bit into MSB ?
+         bcf     status, c   ;shift the word left one bit
+         rlcf    reg0
+         rlcf    reg1
+         rlcf    reg2
+         rlcf    reg3
+         decf    reg5        ;count one less bit left to do
+         jump    spi2_shft   ;back to shift next bit left
+spi2_dshft unbank            ;done shifting input data to start in the MSB
+;
+;   Start the SPI sequence.
+;
+         set_spiclk_off      ;init the clock line low
+         nop
+         nop
+         nop
+         set_ss2_on          ;assert slave select
+;
+;   Transfer each bit.  The outgoing data has been normalized into the high bits
+;   of REG3-REG0.  As these are shifted out the MSB, the received bits are
+;   shifted into the LSB.  The unused low bits of REG3-REG0 are guaranteed to be
+;   0 currently.  REG4 and REG6 contain the number of bits to transfer, which is
+;   guaranteed to be in the range of 0 to 32.  REG6 must be preserved by this
+;   section.
+;
+spi2_bit unbank              ;back here to transfer each new bit both ways
+         movf    reg4
+         bz      spi2_dbit   ;done transferring all bits ?
+
+         btfss   reg3, 7
+         set_spiout_off      ;output is 0 this bit
+         btfsc   reg3, 7
+         set_spiout_on       ;output is 1 this bit
+
+         rlcf    reg0        ;shift out old bit, make room for new received bit
+         rlcf    reg1
+         rlcf    reg2
+         rlcf    reg3
+
+         set_spiclk_on       ;raise clock, data gets transferred on this edge
+         bcf     reg0, 0     ;init received bit to 0
+         btfsc   spiin_reg, spiin_bit ;input bit really is 0 ?
+         bsf     reg0, 0     ;no, set it to 1
+         decf    reg4        ;count one less bit left to transfer
+         nop
+         nop
+         nop
+         set_spiclk_off      ;end this clock pulse
+         jump    spi2_bit    ;back to do next bit
+
+spi2_dbit unbank             ;done transferring all the data bits
+         nop
+         nop
+         nop
+         set_ss2_off         ;de-assert slave select
+         set_spiout_off      ;lower the data line, doesn't matter, for debugging
+;
+;   The SPI frame has been completed and the received data is in the low bits of
+;   REG3-REG0 with the upper unused bits set to 0.  The number of data bits is
+;   in REG6.
+;
+         movff   reg0, reg4  ;save low byte of data word
+         mcall   cmd_lock    ;lock exclusive access to the response stream
+         sendk   rsp_spi2    ;send response opcode
+         movff   reg6, reg0  ;send the number of data bits
+         sendbyte
+         movff   reg4, reg0  ;send the 32 bit data word
+         sendbyte
+         movff   reg1, reg0
+         sendbyte
+         movff   reg2, reg0
+         sendbyte
+         movff   reg3, reg0
+         sendbyte
+         mcall   cmd_unlock  ;release lock on the host response stream
+         jump    cmd_done
+
+;*******************************************************************************
+;
+;   Command IICW adr ndat dat ... dat
+;
+;   Send IIC write message.
+;
+cm_iicw  unbank
+         getbyte             ;get the IIC slave address into REG3
+         movff   reg0, reg3
+         getbyte             ;get the number of data bytes into REG1
+         movff   reg0, reg1
+         mcall   getbuf      ;read the data bytes into BUF, N into REG2
+
+         gcall   iic_on      ;make sure set up for using the IIC bus
+         clrf    reg4        ;init number of data bytes actually sent
+
+         movff   reg3, reg0  ;pass the IIC slave address
+         gcall   iic_start_put ;start the IIC bus write sequence
+         dbankif gbankadr
+         btfss   flag_iicack ;got the ACK ?
+         jump    iicw_dsend  ;no, abort
+
+         lfsr    0, buf      ;init buffer read pointer
+iicw_loop unbank             ;back here to send each new byte
+         movf    reg2
+         bz      iicw_dsend  ;done sending all the bytes ?
+         decf    reg2        ;update bytes left to send for next time
+         movff   postinc0, reg0 ;fetch this byte from the buffer
+         pushreg fsr0l
+         pushreg fsr0h
+         gcall   iic_put     ;send the byte
+         popreg  fsr0h
+         popreg  fsr0l
+         incf    reg4        ;count one more byte sent
+         dbankif gbankadr
+         btfsc   flag_iicack ;not NACK ?
+         jump    iicw_loop   ;got ACK, back to do next byte
+;
+;   Done sending bytes.  REG4 contains the number of bytes actually sent, and
+;   FLAG_IICACK indicates whether the last byte was ACKed or not.
+;
+iicw_dsend unbank
+         gcall   iic_stop    ;end the IIC bus message
+
+         mcall   cmd_lock    ;lock exclusive access to the response stream
+         sendk   rsp_iicw    ;send the response opcode
+
+         clrf    reg0        ;init STAT byte to all fields 0
+         dbankif gbankadr
+         btfsc   flag_iicack ;didn't get ACK from last byte ?
+         bsf     reg0, 0     ;did get ACK
+         sendbyte            ;send the STAT byte
+
+         movff   reg4, reg0
+         sendbyte            ;send the number of bytes actually sent
+
+         mcall   cmd_unlock  ;release lock on the host response stream
+         jump    cmd_done
+
+;*******************************************************************************
+;
+;   Command IICR adr ndat
+;
+;   Cause a read message on the IIC bus and send a IICR response with the
+;   received data bytes.  ADR is the IIC slave address, and NDAT is the number
+;   of data bytes to read from the slave.  The last data byte will be NACKed,
+;   then the IIC sequence ended with a stop condition.
+;
+cm_iicr  unbank
+         getbyte             ;get the IIC slave address into REG1
+         movff   reg0, reg1
+         getbyte             ;get the number of bytes
+         movf    reg0, w
+         sublw   bufsz       ;compare to buffer size
+         movf    reg0, w
+         skip_wle            ;within size the buffer can handle ?
+         movlw   bufsz       ;no, set to maximum we can handle
+         movwf   reg2        ;save final clipped number of bytes in REG2
+
+         gcall   iic_on      ;make sure IIC bus is enabled
+         movff   reg1, reg0  ;pass the address
+         gcall   iic_start_get ;start the IIC read sequence
+         clrf    reg4        ;init IICR response status bits to all 0
+         btfss   flag_iicack ;slave responded to the address byte ?
+         jump    iicr_diic   ;no, abort the sequence now
+         bsf     reg4, 0     ;set STAT bit to indicate ACK received
+;
+;   Read the data bytes into the buffer.  Register usage:
+;
+;     REG0  -  Data byte.
+;
+;     REG1  -  Slave address.
+;
+;     REG2  -  Number of data bytes to read.  This has already been clipped to
+;              the buffer size.
+;
+;     REG3  -  Number of data bytes left to do.
+;
+;     REG4  -  IICR response status byte so far.
+;
+         movf    reg2, w     ;get the number of data bytes to read
+         bz      iicr_diic   ;no data bytes to get, skip this section ?
+         movwf   reg3        ;init number of data bytes left to read
+         lfsr    0, buf      ;init address where to save next byte
+
+iicr_get unbank              ;back here to get each new data byte
+         pushreg fsr0l
+         pushreg fsr0h
+         gcall   iic_get     ;get this data byte into REG0
+         popreg  fsr0h
+         popreg  fsr0l
+         movff   reg0, postinc0 ;stuff the data byte into the buffer
+         decf    reg3        ;count one less data byte left to read
+         bz      iicr_dget   ;just did last data byte ?
+         gcall   iic_ack     ;ACK this byte
+         jump    iicr_get    ;back to read the next byte
+iicr_dget unbank             ;end getting data bytes
+         gcall   iic_nack    ;NACK the last data byte
+
+iicr_diic unbank             ;done with IIC sequence
+         gcall   iic_stop    ;send IIC bus stop sequence
+;
+;   Send the IICR response to the host.  Register usage:
+;
+;     REG0  -  Data byte.
+;
+;     REG1  -  Slave address.
+;
+;     REG2  -  Number of data bytes to read.  This has already been clipped to
+;              the buffer size.
+;
+;     REG4  -  IICR response status byte so far.
+;
+         mcall   cmd_lock    ;lock exclusive access to the response stream
+         sendk   rsp_iicr    ;send the response opcode
+         movff   reg4, reg0
+         sendbyte            ;send the STAT byte
+         movff   reg2, reg0
+         sendbyte            ;send the number of data bytes to follow
+
+         lfsr    0, buf      ;init pointer to first data byte in the buffer
+iicr_send unbank             ;back here to send each new data byte
+         movf    reg2
+         bz      iicr_dsend  ;done sending all the data bytes ?
+         movff   postinc0, reg0 ;get this data byte from the buffer
+         pushreg fsr0l
+         pushreg fsr0h
+         sendbyte            ;send it to the host
+         popreg  fsr0h
+         popreg  fsr0l
+         decf    reg2        ;count one less byte left to do
+         jump    iicr_send   ;back to do next byte
+iicr_dsend unbank
+
+         mcall   cmd_unlock  ;release lock on the host response stream
+         jump    cmd_done
+
+;*******************************************************************************
+;
+;   Command PHINC inc24
+;
+;   Set the automatic phase outputs angle increment per millisecond.  A full
+;   circle is represented by 2^14, which is 16,777,216.  To guarantee 3 distinct
+;   phase outputs, the increment should not exceed 1/6 of a circle, or
+;   2,796,202, which results in 166.67 Hz output frequency.
+;
+;   A INC24 value of 0 disables the automatic phase outputs and does not change
+;   the state of the phase lines each 1 ms interrupt.
+;
+/if enab_phase then
+cm_phinc unbank
+         extern  phinc       ;24 bit phase angle increment every 1 ms
+
+         getbyte             ;get the phase increment into REG0:REG1:REG2
+         movff   reg0, reg2
+         getbyte
+         movff   reg0, reg1
+         getbyte
+
+         movf    reg0, w     ;save overall zero indication in REG3
+         iorwf   reg1, w
+         iorwf   reg2, w
+         movwf   reg3
+
+         dbankif gbankadr
+         movf    reg2, w
+         movf    reg3        ;set Z iff phase outputs disabled
+         intr_off            ;temp disable interrupts
+         movwf   phinc+0
+         movff   reg1, phinc+1
+         movff   reg0, phinc+2
+         bz      phinc_dintr ;phase inc zero, nothing more to do ?
+         movlw   b'11111000' ;make sure phase lines configured as outputs
+         andwf   trisb
+phinc_dintr
+         intr_on             ;re-enable interrupts
+
+         jump    cmd_done
+  /endif
+
+;*******************************************************************************
+;
+;   Commands dispatch table.
+;
+.cmdtable code_pack
+         dsp_start cmd_table ;start command opcodes dispatch table
+
+         dsp_entry 0, cmd_done ;NOP
+         dsp_entry 3, cm_fwver ;send 1-255 firmware version number
+         dsp_entry 4, cm_nameset ;N chars, set unit name
+         dsp_entry 5, cm_nameget ;request unit name
+         dsp_entry 9, cm_setb ;write value to port B
+         dsp_entry 10, cm_spi1 ;send full SPI frame to slave 1, up to 32 data bits
+         dsp_entry 11, cm_spi2 ;send SPI frame to slave 2
+         dsp_entry 12, cm_iicw ;send IIC write message
+         dsp_entry 13, cm_iicr ;cause IIC read sequence and return data bytes
+
+/if enab_phase then
+         dsp_entry 14, cm_phinc ;set phase outputs increment per ms
+  /endif
+
+         dsp_end cmd_table   ;end of command opcodes dispatch table
+
+         end

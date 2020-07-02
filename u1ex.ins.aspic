@@ -1,0 +1,196 @@
+;   ***************************************************************
+;   * Copyright (C) 2007, Embed Inc (http://www.embedinc.com)     *
+;   *                                                             *
+;   * Permission to copy this file is granted as long as this     *
+;   * copyright notice is included in its entirety at the         *
+;   * beginning of the file, whether the file is copied in whole  *
+;   * or in part and regardless of whether other information is   *
+;   * added to the copy.                                          *
+;   *                                                             *
+;   * The contents of this file may be used in any way,           *
+;   * commercial or otherwise.  This file is provided "as is",    *
+;   * and Embed Inc makes no claims of suitability for a          *
+;   * particular purpose nor assumes any liability resulting from *
+;   * its use.                                                    *
+;   ***************************************************************
+;
+;   Include file for the U1EX PIC application.
+;
+;   This application is a example of using the Embed Inc USB routines on a
+;   Microchip 18F PIC with the USB peripheral.  It is not intended to serve a
+;   useful purpose other than demonstration.
+;
+;   Debug switches.  The normal production mode for all the MPASM switches
+;   is 0.  A value of 1 enables the debugging function unless otherwise
+;   indicated.
+;
+/const   debug_icd bool = false ;enables in-circuit debugging
+/const   debug_ledpatt = false ;moving pattern on port B, assumed connected to LEDs
+debug_echoenum equ 0         ;echo USB enumeration requests to serial port
+debug_clrusbbuf equ 0        ;clear USB I/O buffers to 0 at startup
+
+n_iregs  equ     1           ;number of IREGn registers for interrupt use
+;
+;   Switches that enable various different applications.
+;
+/const   enab_phase bool = false ;3 phase outputs on RB0-RB2
+/const   enab_blip bool = false ;enable periodic blip on RB2
+
+/include "u1exlib.ins.aspic"
+;
+;   Application configuration parameters
+;
+namemaxlen equ   80          ;max allowed char in user-settable name string
+gbankadr equ     0           ;adr within globals bank (access bank on PIC18)
+/const   blip_per real = 10.0 ;blip period, seconds
+/const   blip_on real = 0.250 ;blip on time, seconds
+
+tsksave  set     0           ;build the mask of registers for TASK_YIELD to save
+tsksave  set     tsksave | regf0
+tsksave  set     tsksave | regf1
+tsksave  set     tsksave | regf2
+tsksave  set     tsksave | regf3
+tsksave  set     tsksave | regf4
+tsksave  set     tsksave | regf5
+tsksave  set     tsksave | regf6
+tsksave  set     tsksave | regf7
+;
+;   Response byte opcodes.  Responses are sent to the host starting with one of
+;   these opcode bytes, followed by any data bytes defined for that opcode.  See
+;   the firmware documentation file FW_U1EX.TXT for details of the host
+;   protocol.
+;
+rsp_nop  equ     0           ;must always be ignored by the host
+rsp_fwver equ    1           ;1-N firmware version number follows
+rsp_name equ     2           ;user-settable name, <n> <string>
+rsp_spi1 equ     3           ;sends received data from SPI1 command
+rsp_spi2 equ     4           ;sends received data from SPI2 command
+rsp_iicw equ     5           ;reports on IIC write message
+rsp_iicr equ     6           ;returns data read from IIC message
+rsp_dcc  equ     7           ;sends one received DCC packet to the host
+;
+;   Derived constants.
+;
+/include "(cog)src/pic/task_setup.ins.aspic"
+/include "u1ex_usb.ins.aspic" ;global definitions required by USB subsystem
+
+;**********
+;
+;   EEPROM allocation.  Each of the EE_xxx symbols is the offset of a particular
+;   piece of non-volatile state from the beginning of the EEPROM.  Fixed
+;   allocation of the EEPROM is performed here instead of letting the linker
+;   place individual pieces of state so that consistancy is maintained between
+;   firmware versions.  To the extent possible, newer firmware versions should
+;   use the same EEPROM state in the same locations as previous versions.  This
+;   at least makes it possible for non-volatile settings to be preserved for
+;   some types of firmware updates, such as bootloads.  Note that this comment
+;   does not guarantee any such mechanisms are actually implemented.
+;
+  cblock 0
+         ee_namelen:1        ;number of characters in user-settable name string
+         ee_name:namemaxlen  ;the user-settable name string characters
+    endc
+
+;**********
+;
+;   Global flag bits.  As many GFL0 thru GFLn variables as needed are
+;   automatically created by the /FLAG preprocessor directive.  After all
+;   flags are defined, NFLAGB will be left indicating the number of GFLx
+;   variables created.  For each flag, the following assembler symbols
+;   will be defined:
+;
+;     flag_<name>_regn  -  0-N GFLn variable number containing the flag
+;     flag_<name>_bit   -  0-7 flag bit number within its GFLn variable
+;     flag_<name>       -  string substitution macro gfl<n>,<bit>.  This
+;                          symbol can be used directly with bit manupulation
+;                          instructions.
+;
+;   See the PREPIC documentation file for details of the /FLAG directive.
+;
+/flag    usbev               ;a USB event was handled
+/flag    usb0reset           ;reset the USB endpoint 0 request processing logic
+/flag    usbsetadr           ;USB SET_ADDRESS request is in progress
+/flag    usbreset            ;a USB reset was received
+
+/flag    usbon               ;USB state is up and ready for app communication
+/flag    cmdreset            ;reset command processor next time run
+/flag    nameusb0            ;name get routines acquired by USB 0 handler
+/flag    namegcmd            ;name get routines acquired by command processor
+/flag    namescmd            ;name set routines acquired by command processor
+
+/flag    promlock            ;non-volatile memory is acquired by a task
+/flag    rsp_lock            ;response to host is locked by a task
+/flag    cmd_rsplock         ;response lock is being held by command proc task
+/flag    waitdone            ;timed wait interval has elapsed
+
+/flag    sin                 ;a serial line input byte is available
+/flag    sout                ;UART can accept another output byte
+/flag    iicon               ;I/O pins set up for IIC bus
+/flag    iicack              ;IIC bus ACK received or to write
+
+/flag    dccpack             ;complete DCC packet is ready to be sent to host
+
+;**********
+;
+;   I/O pin declarations.  /INBIT and /OUTBIT are preprocessor
+;   directives.  Each one defines a single I/O pin.  See the PREPIC
+;   documentation file for details.  Briefly, the directives are:
+;
+;     /INBIT <name> <port> <bit> [pup]
+;     /OUTBIT <name> <port> <bit> [<initial value>]
+;
+;   The following assembler symbols will be defined for each /INBIT
+;   and /OUTBIT:
+;
+;     <name>_reg  -  Address of port register containing the bit.
+;     <name>_tris -  Address of TRIS register for the port.
+;     <name>_bit  -  0-7 bit number withing the port.
+;     <name>_pin  -  String substitution macro for the port register
+;                    and the I/O bit number.  This symbol can be used
+;                    directly with bit manipulation instructions.
+;
+;   The ports are initialized in the PORT module according to the I/O
+;   bit definitions here.
+;
+/outbit  ss1     porta 0 n   ;SPI slave select 1
+/outbit  ss2     porta 1 n   ;SPI slave select 2
+/outbit  ra2     porta 2
+/outbit  ra3     porta 3
+/outbit  ra4     porta 4
+/outbit  ra5     porta 5
+
+/outbit  sda     portb 0     ;IIC data line, output until IIC enabled
+/outbit  scl     portb 1     ;IIC clock line, output until IIC enabled
+/outbit  rb2     portb 2
+/inbit   dcc     portb 3     ;DCC input line
+/outbit  rb4     portb 4     ;pushbutton
+/outbit  rb5     portb 5     ;pushbutton, PGM, 910 kOhm to ground
+/outbit  rb6     portb 6     ;pushbutton, PGC
+/outbit  rb7     portb 7     ;pushbutton, PGD
+
+/outbit  spiclk  portc 0     ;SPI clock line
+/outbit  spiout  portc 1     ;SPI data output line
+/inbit   spiin   portc 2     ;SPI data input line
+
+/inbit   usbdm   portc 4     ;USB D- line
+/inbit   usbdp   portc 5     ;USB D+ line
+/outbit  tx      portc 6     ;UART output
+/inbit   rx      portc 7     ;UART input
+;
+;*******************************************************************************
+;
+;   Macro WAITMS ms
+;
+;   Wait the indicated number of 1mS clock ticks.
+;
+;   REG0, REG1 are trashed.
+;
+waitms   macro   ms
+  if (ms)                    ;skip whole macro if waiting 0 ticks
+         loadk16 reg0, (ms)  ;pass the wait time
+         gcall   wait_set    ;start the wait
+         dbankif gbankadr
+         btfss   flag_waitdone ;wait elapsed yet ?
+         goto    $-progadrb  ;no, go back and check again
+    endif
+         endm

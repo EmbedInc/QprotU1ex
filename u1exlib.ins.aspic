@@ -1,0 +1,35 @@
+;   ***************************************************************
+;   * Copyright (C) 2007, Embed Inc (http://www.embedinc.com)     *
+;   *                                                             *
+;   * Permission to copy this file is granted as long as this     *
+;   * copyright notice is included in its entirety at the         *
+;   * beginning of the file, whether the file is copied in whole  *
+;   * or in part and regardless of whether other information is   *
+;   * added to the copy.                                          *
+;   *                                                             *
+;   * The contents of this file may be used in any way,           *
+;   * commercial or otherwise.  This file is provided "as is",    *
+;   * and Embed Inc makes no claims of suitability for a          *
+;   * particular purpose nor assumes any liability resulting from *
+;   * its use.                                                    *
+;   ***************************************************************
+;
+;   This include file sets up the environment for the U1EX firmware.
+;
+/const   picname = "18F2550" ;specific PIC model name
+/const   buildname = "u1ex"  ;name of this project
+/const   srcdir  = [evar "srcdir"] ;SOURCE directory containing this project
+/const   fwtype  integer = 0 ;unique ID for this firmware
+
+/include "(cog)src/pic/std_def.ins.aspic"
+/include "(cog)src/pic/fwtype.ins.aspic"
+;
+;   Set configuration for the standard routines and macros.  The stack
+;   location and size has been set to default by the STD_DEF include
+;   file, and can be customized before the STD include file.
+;
+/const   freq_osc real = 48.0e6 ;CPU oscillator frequency in Hz
+stacklast set    h'60'
+stacksize set    64
+
+/include "(cog)src/pic/std.ins.aspic"

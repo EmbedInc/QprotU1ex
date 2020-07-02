@@ -1,0 +1,327 @@
+;   ***************************************************************
+;   * Copyright (C) 2007, Embed Inc (http://www.embedinc.com)     *
+;   *                                                             *
+;   * Permission to copy this file is granted as long as this     *
+;   * copyright notice is included in its entirety at the         *
+;   * beginning of the file, whether the file is copied in whole  *
+;   * or in part and regardless of whether other information is   *
+;   * added to the copy.                                          *
+;   *                                                             *
+;   * The contents of this file may be used in any way,           *
+;   * commercial or otherwise.  This file is provided "as is",    *
+;   * and Embed Inc makes no claims of suitability for a          *
+;   * particular purpose nor assumes any liability resulting from *
+;   * its use.                                                    *
+;   ***************************************************************
+;
+;   This module contains the main application routine that is run after
+;   the system is initialized.
+;
+/include "u1ex.ins.aspic"
+/include "u1ex_usb.ins.aspic"
+
+         extern  cnt1ms      ;1 ms clock tick counter byte
+         extern  ndccpack    ;number of data bytes received DCC packet
+         extern  dccpack     ;received DCC packet data bytes buffer
+         extern_flags        ;declare global flag bits EXTERN
+
+;*******************************************************************************
+;
+;   Derived constants.
+;
+/var new s string
+/var new ii integer
+/var new r real
+
+/if enab_blip then           ;blip output enabled ?
+  /const blip_pertk integer = [rnd [* blip_per 1000]] ;blip period, 1 ms ticks
+  /const blip_ontk integer = [rnd [* blip_on 1000]] ;blip on time, 1 ms ticks
+  /if [> blip_pertk 65535] then
+         error   "Blip period too long"
+         end
+    /stop
+    /endif
+  /if [> blip_ontk 65535] then
+         error   "Blip on time too long"
+         end
+    /stop
+    /endif
+  /set s ""
+  /set r [/ blip_pertk 1000]
+  /append s "Blip period " [eng r] "s"
+  /set r [/ blip_ontk 1000]
+  /append s ", on time " [eng r] "s"
+  /show "  " s
+  /endif
+
+;*******************************************************************************
+;
+;   Configuration constants.
+;
+lbank    equ     1           ;register bank for the local state of this module
+;
+;   Derived constants.
+;
+lbankadr equ     bankadr(lbank) ;address within local state register bank
+
+;*******************************************************************************
+;
+;   Local state.
+;
+         defram  lbankadr
+
+last1ms  res     1           ;last 1 ms clock value up to date with
+
+/if enab_blip then
+blefper  res     2           ;1 ms ticks left in current blip period
+blefon   res     2           ;1 ms ticks left in blip on time
+  /endif
+
+dccleft  res     1           ;N DCC packet data bytes left to send to host
+         ;
+         ;   Flags in DCCLEFT.  Only the low 4 bits are needed to count the
+         ;   number of DCC packet data bytes left to send.  The remaining upper
+         ;   bits are used to signal individual events that must be handled to
+         ;   send the entire DCC response to the host.  Each of these events
+         ;   are only handled when that can be done immediately, with the event
+         ;   conditions staying pending until they can be handled.  When one
+         ;   event is completed, the next event in the sequence is set pending.
+         ;
+         ;   The entire byte is 0 when no DCC response is in the process of
+         ;   being sent or is pending to be sent.
+         ;
+#define ev_dcclock dccleft, 7 ;acquire response stream lock
+#define ev_dccopc dccleft, 6 ;send DCC response opcode
+#define ev_dccnb dccleft, 5  ;send number of data bytes byte in DCC response
+#define ev_dccn h'0F'        ;mask for number of data bytes left to send
+
+
+.main    code
+
+;*******************************************************************************
+;
+;   Routine MAIN
+;
+;   This entry point is jumped to from the INIT module, once system
+;   initialization is complete.
+;
+         glbent  main
+
+;**********
+;
+;   Initialize the state managed by this module.
+;
+         dbankif lbankadr
+         loadk8  dccleft, 0  ;init to not sending DCC packet to host
+
+         movff   cnt1ms, last1ms ;init to up to date with current clock
+
+/if enab_blip then
+         dbankif lbankadr
+         loadk16 blefper, 0  ;start first period next clock tick
+         loadk16 blefon, 0   ;init to blip output is off
+  /endif
+
+;**********
+;
+;   Main application loop.  Back here to look for something to do.
+;   Whenever something is found that needs handling, a handler routine
+;   is jumped to.  All handler routines jump back to LOOP_MAIN when done.
+;   This means events are checked in priority order, with high priority
+;   events checked earlier.
+;
+         glbent  loop_main
+         gcall   task_yield  ;give other tasks a chance to run
+;
+;   Handle USB reset.
+;
+         dbankif gbankadr
+         btfss   flag_usbreset
+         jump    no_usbreset
+
+         bcf     flag_usbreset ;clear the event condition
+         bsf     flag_cmdreset ;tell the command processor to reset itself
+no_usbreset
+;
+;   Handle new DCC packet received.
+;
+         skip_flag dccpack   ;a new received DCC packet is available ?
+         jump    d_dccpack   ;no
+         dbankif lbankadr
+         tstfsz  dccleft     ;not already sending it ?
+         jump    d_dccpack
+         ;
+         ;   A new DCC packet has been received.  Initialize for sending it to
+         ;   the host.
+         ;
+         dbankif lbankadr
+         bsf     ev_dcclock  ;set event to acquire response stream lock
+
+d_dccpack unbank
+;
+;   Acquire response stream lock for sending DCC packet if this is pending and
+;   the lock can be acquired immediately.
+;
+         dbankif lbankadr
+         btfss   ev_dcclock  ;need to acquire response stream lock
+         jump    n_dcclock   ;no
+
+         skip_nflag rsp_lock ;the lock is available now ?
+         jump    n_dcclock   ;no
+         bcf     ev_dcclock  ;clear the event condition
+         bsf     ev_dccopc   ;set event to send DCC response opcode
+         gcall   cmd_lock    ;acquire the lock
+         jump    loop_main   ;done handling this event
+
+n_dcclock unbank
+;
+;   Send the DCC response opcode if this is pending and can be done immediately.
+;
+         dbankif lbankadr
+         btfss   ev_dccopc   ;need to send DCC response opcode ?
+         jump    n_dccopc    ;no
+
+         loadk8  reg0, rsp_dcc ;get the byte to send
+         gcall   send_byte_if ;try to send it
+         bz      d_dccopc    ;the byte was not sent ?
+         ;
+         ;   The DCC response opcode byte was successfully sent.  Set up the
+         ;   state for sending the data bytes.
+         ;
+         dbankif lbankadr
+         bcf     ev_dccopc   ;clear the event condition
+         bsf     ev_dccnb    ;set event to send number of data bytes byte
+
+d_dccopc unbank              ;done trying to send the byte
+         jump    loop_main
+
+n_dccopc unbank
+;
+;   Send the number of DCC data bytes in the DCC response if this is pending and
+;   can be done immediately.
+;
+         dbankif lbankadr
+         btfss   ev_dccnb    ;need to send number of data bytes byte ?
+         jump    n_dccn      ;no
+
+         movff   ndccpack, reg0 ;get the byte to send
+         gcall   send_byte_if ;try to send it
+         bz      d_dccn      ;the byte was not sent ?
+         ;
+         ;   The DCC response opcode byte was successfully sent.  Set up the
+         ;   state for sending the data bytes.
+         ;
+         movff   ndccpack, dccleft ;init to all packet bytes left to send
+
+d_dccn   unbank              ;done trying to send the byte
+         jump    loop_main
+
+n_dccn   unbank
+;
+;   Send a DCC response data byte if this is pending and one can be sent
+;   immediately.
+;
+         dbankif lbankadr
+         movf    dccleft, w  ;get DCC response sending state
+         bz      n_dccbyte   ;sending DCC response packet not in progress ?
+         andlw   ~ev_dccn    ;mask in the specific event flags, not N data bytes
+         bnz     n_dccbyte   ;a specific event is pending, trumps data byte ?
+         ;
+         ;   At least one data byte is ready to send now.
+         ;
+         dbankif lbankadr
+         movf    dccleft, w  ;get number of data bytes left to send
+         dbankif gbankadr
+         subwf   ndccpack, w ;make index into buffer for this byte
+         lfsr    0, dccpack  ;point to start of buffer
+         addwf   fsr0l       ;point to the byte to send
+         movff   indf0, reg0 ;fetch the byte to send into REG0
+         gcall   send_byte_if ;try to send it
+         bz      d_dccbyte   ;the byte was not sent ?
+         ;
+         ;   The byte was successfully sent.  Advance the state accordingly.
+         ;
+         dbankif lbankadr
+         decfsz  dccleft     ;count one less byte left to send
+         jump    d_dccbyte   ;didn't just finish sending the response ?
+
+         clrflag dccpack     ;indicate done with the received DCC packet
+         clrf    reg1        ;flush the USB output buffer
+         gcall   usb_flush1
+         gcall   cmd_unlock  ;release lock on the response stream
+
+d_dccbyte unbank
+         jump    loop_main
+
+n_dccbyte unbank
+;
+;   Check for a new tick.  Skip ahead to D_TICK if there is no tick.
+;
+         dbankif gbankadr
+         movf    cnt1ms, w   ;get current 1 ms tick counter
+         dbankif lbankadr
+         xorwf   last1ms, w  ;compare to value current with
+         skip_nz             ;new tick ?
+         jump    d_tick      ;no, skip to end of tick handling events
+         ;
+         ;   There is at least one new unhandled clock tick.
+         ;
+         incf    last1ms     ;update clock value will now be current with
+;
+;   1 ms clock tick.  Update the blip output.
+;
+/if enab_blip then
+         dbankif lbankadr
+         movlw   0
+         decf    blefper+0   ;count one less tick left in period
+         subwfb  blefper+1
+         skip_borr           ;the period just ended ?
+         jump    blip_nper   ;no new period this time
+         ;
+         ;   The period just ended.  Start a new one, and initialize the number
+         ;   of ticks left in the ON time.
+         ;
+         loadk16 blefper, [- blip_pertk 1] ;reset to start of period
+         loadk16 blefon, [v blip_ontk] ;reset to start of ON time
+         jump    blip_dstate ;done updating internal blip state
+         ;
+         ;   No new period.  The period counter has already been updated.  W
+         ;   contains 0.
+         ;
+blip_nper dbankis lbankadr
+         decf    blefon+0    ;decrement remaining ON time counter
+         subwfb  blefon+1
+         jmp_nborr blip_dstate ;no borrow, counter wasn't already 0 ?
+         loadk16 blefon, 0   ;was 0, restore to 0
+         ;
+         ;   The period and remaining ON time counters have been updated.
+         ;
+         ;   Now set the output if the remaining ON time is non-zero.
+         ;
+blip_dstate dbankis lbankadr
+         movf    blefon+0, w ;get OR of the two ON counter bytes
+         iorwf   blefon+1, w
+         bz      blip_off
+         ;
+         ;   Turn on the blip output.
+         ;
+         bsf     latb, 2
+         jump    d_blip
+         ;
+         ;   Turn off the blip output.
+         ;
+blip_off dbankis lbankadr
+         bcf     latb, 2
+
+d_blip   unbank              ;done with blip output this iteration
+  /endif                     ;end of blip output enabled
+
+
+d_tick   unbank              ;done with all 1 ms tick handling
+;
+;   Done checking all events.  Go back to the start of the event loop and check
+;   them all again.
+;
+         jump    loop_main   ;back to start of main event loop
+
+         end

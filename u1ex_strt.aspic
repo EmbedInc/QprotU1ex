@@ -1,0 +1,257 @@
+;   ***************************************************************
+;   * Copyright (C) 2007, Embed Inc (http://www.embedinc.com)     *
+;   *                                                             *
+;   * Permission to copy this file is granted as long as this     *
+;   * copyright notice is included in its entirety at the         *
+;   * beginning of the file, whether the file is copied in whole  *
+;   * or in part and regardless of whether other information is   *
+;   * added to the copy.                                          *
+;   *                                                             *
+;   * The contents of this file may be used in any way,           *
+;   * commercial or otherwise.  This file is provided "as is",    *
+;   * and Embed Inc makes no claims of suitability for a          *
+;   * particular purpose nor assumes any liability resulting from *
+;   * its use.                                                    *
+;   ***************************************************************
+;
+;   Top module for the U1EX project.  See the U1EX.INS.ASPIC include
+;   file for a description of the project.
+;
+/include "u1ex.ins.aspic"
+
+         extern  regs        ;force general registers to be defined
+
+         extern  init        ;system startup after individual modules initialized
+;
+;*******************************************************************************
+;
+;   Set static processor configuration bits.
+;
+cfgosc   set     0           ;init to no config for this oscillator setting
+
+  if freq_osc == 16000000    ;setup is for 16MHz CPU oscillator ?
+         __config config1l, b'11111001'
+                 ;    XX------  unused
+                 ;    --1-----  USB clock is 96MHz PLL / 2 = 48MHz
+                 ;    ---11---  system clock is 96MHz PLL / 6 = 16MHz
+                 ;    -----001  div osc by 2 for 4MHz PLL input
+cfgosc   set     1
+    endif
+  if freq_osc == 24000000    ;setup is for 24MHz CPU oscillator ?
+         __config config1l, b'11110001'
+                 ;    XX------  unused
+                 ;    --1-----  USB clock is 96MHz PLL / 2 = 48MHz
+                 ;    ---10---  system clock is 96MHz PLL / 4 = 24MHz
+                 ;    -----001  div osc by 2 for 4MHz PLL input
+cfgosc   set     1
+    endif
+  if freq_osc == 32000000    ;setup is for 32MHz CPU oscillator ?
+         __config config1l, b'11101001'
+                 ;    XX------  unused
+                 ;    --1-----  USB clock is 96MHz PLL / 2 = 48MHz
+                 ;    ---01---  system clock is 96MHz PLL / 3 = 32MHz
+                 ;    -----001  div osc by 2 for 4MHz PLL input
+cfgosc   set     1
+    endif
+  if freq_osc == 48000000    ;setup is for 48MHz CPU oscillator ?
+         __config config1l, b'11100001'
+                 ;    XX------  unused
+                 ;    --1-----  USB clock is 96MHz PLL / 2 = 48MHz
+                 ;    ---00---  system clock is 96MHz PLL / 2 = 48MHz
+                 ;    -----001  div osc by 2 for 4MHz PLL input
+cfgosc   set     1
+    endif
+  if cfgosc == 0
+         error   No config setting for CPU oscillator of #v(freq_osc)Hz.
+    endif
+
+         __config config1h, b'00111111'
+                 ;    0-------  disable oscillator switchover mode
+                 ;    -0------  disable failsafe clock monitor
+                 ;    --XX----  unused
+                 ;    ----1111  HS oscillator with 96MHz USB PLL enabled
+
+         __config config2l, b'11110110'
+                 ;    XX------  unused
+                 ;    --1-----  enable internal USB voltage regulator
+                 ;    ---10---  select brownout threshold 2.65-2.93 volts
+                 ;    -----11-  enable hardware-only brownout reset
+                 ;    -------0  enable power up timer
+
+         __config config2h, b'11111110'
+                 ;    XXX-----  unused
+                 ;    ---1111-  select watchdog timer postscaler of 32768
+                 ;    -------0  disable the watchdog timer
+
+         __config config3h, b'11111000'
+                 ;    1-------  select MCLR role for MCLR pin, not RE3
+                 ;    -XXXX---  unused
+                 ;    -----0--  disable timer 1 oscillator
+                 ;    ------0-  port B <4:0> digital I/O on reset, not analog
+                 ;    -------0  CCP2 pin is RB3, not RC1
+
+         __config config4l, b'10011010'
+                 ;    ---XX-X-  unused
+                 ;    1-------  disable debugger, RB6,RB7 normal I/O
+                 ;    -0------  disable extended instruction set
+                 ;    --0-----  disable ICSP port, not used this PIC but must be 0
+                 ;    -----0--  disable low voltage programming
+                 ;    -------0  disable stack overflow/underflow reset
+
+         __config config5l, b'11111111' ;disable code protection for all blocks
+
+         __config config5h, b'11111111'
+                 ;    --XXXXXX  unused
+                 ;    1-------  disable data EEPROM code protection
+                 ;    -1------  disable boot block code protection
+
+         __config config6l, b'11111111' ;disable write protection for all blocks
+
+         __config config6h, b'11111111'
+                 ;    ---XXXXX  unused
+                 ;    1-------  disable data EEPROM write protection
+                 ;    -1------  disable boot block write protection
+                 ;    --1-----  disable configuration write protection
+
+         __config config7l, b'11111111' ;disable table read protection for all blocks
+
+         __config config7h, b'11111111'
+                 ;    X-XXXXXX  unused
+                 ;    -1------  disable boot block table read protection
+;
+;*******************************************************************************
+;
+;   Global state.
+;
+         defram  gbankadr
+;
+;   Declare global flag bytes GFL0 - GFLn.  The assembly constant
+;   NFLAGB is set to the number of these flag bytes by the /FLAG
+;   preprocessor directives in U1EX.INS.ASPIC.
+;
+         flags_define        ;define the variables for the global flag bits
+;
+;*******************************************************************************
+;
+;   Executable code.
+;
+;   Reset vector.
+;
+.reset   code    0
+         clrf    intcon      ;disable all interrupts
+         gjump   start       ;jump to relocatable startup code
+;
+;   Relocatable code.
+;
+;   This code only initializes the individual modules.  The remaining
+;   system initialization is done in the U1EX_INIT module, which jumps
+;   to MAIN when done.
+;
+.strt    code
+start    unbank
+;
+;   Set the oscillator calibration value if this processor has one and
+;   we are using the internal oscillator.  The constant OSC_CAL_CALL
+;   is defined in the processor configuration section if the internal
+;   oscillator is being used and the factory calibration value is
+;   stored in a RETLW instruction at a particular address.
+;
+  ifdef osc_cal_call         ;internal oscillator being used, get value via RETLW
+         setpage osc_cal_call ;set up for calling the specific address
+         call    osc_cal_call ;get the calibration value into W
+         dbankif osccal
+         movwf   osccal      ;adjust the oscillator to the factory calibrated value
+         mypage              ;restore paging state to this page
+    endif
+;
+;   Init the interrupt system to completely off and default configuration.
+;
+  ifdef intcon2
+         dbankif intcon2
+         movlw   b'10000000'
+                 ; 1-------  disable port B passive pullups
+                 ; -0000000  init interrupts to disabled
+         movwf   intcon2     ;init interrupts off to extent possible
+    endif
+  ifdef intcon3
+         dbankif intcon3
+         clrf    intcon3
+    endif
+         ;
+         ;   Make sure all interrupts are individually disabled.
+         ;
+  ifdef pie1
+         dbankif pie1
+         clrf    pie1
+    endif
+  ifdef pie2
+         dbankif pie2
+         clrf    pie2
+    endif
+  ifdef pie3
+         dbankif pie3
+         clrf    pie3
+    endif
+         ;
+         ;   Clear any existing interrupt conditions.
+         ;
+  ifdef pir1
+         dbankif pir1
+         clrf    pir1
+    endif
+  ifdef pir2
+         dbankif pir2
+         clrf    pir2
+    endif
+  ifdef pir3
+         dbankif pir3
+         clrf    pir3
+    endif
+         ;
+         ;   Init all interrupt priorities to the lowest priority.
+         ;
+  ifdef ipr1
+         dbankif ipr1
+         clrf    ipr1
+    endif
+  ifdef ipr2
+         dbankif ipr2
+         clrf    ipr2
+    endif
+  ifdef ipr3
+         dbankif ipr3
+         clrf    ipr3
+    endif
+
+  ifdef rcon
+         dbankif rcon
+         bcf     rcon, ipen
+    endif
+;
+;   Initialize the global flag bits that are declared with /FLAG
+;   directives in the main include file.
+;
+         flags_clear         ;initialize all global flag bits to 0
+;
+;   Initialize the separate modules.
+;
+         gcallnr stack_init  ;init the software stack
+         gcallnr port_init   ;init I/O ports
+         gcallnr task_init   ;init multi-tasking system
+         gcallnr uart_init   ;init serial I/O
+         gcallnr prom_init   ;init low level EEPROM handler
+         gcallnr name_init   ;init user-settable name handling
+         gcallnr cmd_init    ;init host command processing
+         gcallnr iic_init    ;init IIC bus handler
+         gcallnr usb_init    ;init USB handler
+         gcallnr usb0_init   ;init USB endpoint 0 request processing
+         gcallnr dcc_init    ;init DCC decoder
+
+         gcallnr intr_init   ;init interrupt management and enable interrupts
+;
+;   All the individual modules have been initialized.  Now start up the
+;   overall system.
+;
+         gjump   init        ;go to system initialization module
+
+         end

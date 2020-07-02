@@ -1,0 +1,42 @@
+;   Cooperative multi-tasking system.
+;
+;   The following constants are assumed to be defined in the project include
+;   file:
+;
+;     TSKSAVE  -  OR of the REGFn flags to indicate which REGn general registers
+;       are to be preserved per task accross a call to TASK_YIELD.
+;
+;     TSKNSAVE  -  OR of all the REGFn flags for the variables not saved accross
+;       a call to TASK_YIELD.
+;
+;     NTSKSAVE  -  Number of bytes indicated by TSKSAVE that must be saved and
+;       restored by TASK_YIELD.
+;
+;   The standard include file TASK_SETUP.INS.ASPIC can be used to default
+;   TSKSAVE to REG0-REG7 if not defined, then define TSKNSAVE and NTSKSAVE from
+;   TSKSAVE.
+;
+;   The tasks in this firmware are:
+;
+;     Main task.  This the initial task that runs the main event loop after
+;       initialization.
+;
+;     USB background handler.  This task is internal to the USB subsystem.  It
+;       is starting by a call to USB_START in the INIT module.  This task is
+;       required for the USB subsystem to function, but does not otherwise
+;       interact directly with the application.
+;
+;     Command processing task.  This task is in the CMD module and is started by
+;       calling CMD_START in the INIT module.  The task processes the commands
+;       received over the application-level USB byte stream.
+;
+/include "u1ex.ins.aspic"
+;
+;   Configuration constants.
+;
+ntasks   equ     3           ;maximum number of tasks supported
+cslev    equ     31          ;maximum possible number of call stack levels
+lbank    equ     1           ;bank for local state
+
+/include "(cog)src/pic/task.ins.aspic"
+         end

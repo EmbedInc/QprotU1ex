@@ -1,0 +1,29 @@
+;   ***************************************************************
+;   * Copyright (C) 2007, Embed Inc (http://www.embedinc.com)     *
+;   *                                                             *
+;   * Permission to copy this file is granted as long as this     *
+;   * copyright notice is included in its entirety at the         *
+;   * beginning of the file, whether the file is copied in whole  *
+;   * or in part and regardless of whether other information is   *
+;   * added to the copy.                                          *
+;   *                                                             *
+;   * The contents of this file may be used in any way,           *
+;   * commercial or otherwise.  This file is provided "as is",    *
+;   * and Embed Inc makes no claims of suitability for a          *
+;   * particular purpose nor assumes any liability resulting from *
+;   * its use.                                                    *
+;   ***************************************************************
+;
+;   This module contains subroutine PORT_INIT.  This is a generic
+;   subroutine that sets up the ports according to the /INBIT and
+;   /OUTBIT preprocessor directives in the project include file.
+;   All analog inputs are also initialized to digital.  If any
+;   analog peripherals are in use by this project, then they must
+;   be separately initialized after PORT_INIT is called.
+;   Assembly time logic is used to configure PORT_INIT to the
+;   specific target PIC and its mix of analog peripherals and
+;   ports.
+;
+/include "u1ex.ins.aspic"
+/include "(cog)src/pic/port.ins.aspic"
+         end

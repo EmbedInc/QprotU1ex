@@ -1,0 +1,15 @@
+u1ex_cmd.o
+u1ex_dcc.o
+u1ex_iic.o
+u1ex_init.o
+u1ex_intr.o
+u1ex_main.o
+u1ex_name.o
+u1ex_port.o
+u1ex_prom.o
+u1ex_uart.o
+u1ex_regs.o
+u1ex_stack.o
+u1ex_task.o
+u1ex_usb.o
+u1ex_usb0.o

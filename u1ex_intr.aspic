@@ -1,0 +1,392 @@
+;   ***************************************************************
+;   * Copyright (C) 2007, Embed Inc (http://www.embedinc.com)     *
+;   *                                                             *
+;   * Permission to copy this file is granted as long as this     *
+;   * copyright notice is included in its entirety at the         *
+;   * beginning of the file, whether the file is copied in whole  *
+;   * or in part and regardless of whether other information is   *
+;   * added to the copy.                                          *
+;   *                                                             *
+;   * The contents of this file may be used in any way,           *
+;   * commercial or otherwise.  This file is provided "as is",    *
+;   * and Embed Inc makes no claims of suitability for a          *
+;   * particular purpose nor assumes any liability resulting from *
+;   * its use.                                                    *
+;   ***************************************************************
+;
+;   Interrupt service and related routines.
+;
+/include "u1ex.ins.aspic"
+
+         extern  uart_intr_recv ;receive interrupt routine in UART module
+         extern  intr_ccp2   ;CCP2 interrupt routine in DCC module
+
+         extern_flags        ;declare global flag bits EXTERN
+
+;*******************************************************************************
+;
+;   Configuration constants.
+;
+ledms    equ     100         ;LEDs update period, ms
+intr_priorities equ false    ;disable multiple interrupt priorities
+;
+;   Indicate which FSRs are to be saved by the single/high and low priority
+;   interrupt routines.
+;
+;   FSR0 is used by the FIFO_xxx macros, and must be saved if FIFOs are
+;   accessed from interrupt code.  Note that the UART interrupt routines
+;   use FIFOs.
+;
+;   FSR1 has no dedicated purpose in the general PIC development environment.
+;
+;   FSR2 is reserved as the software stack pointer.  This stack will be used
+;   to save state during an interrupt.  FSR2 must therefore not be explicitly
+;   saved.  It will automatically be restored if the same number of bytes
+;   are popped from the stack as are pushed to the stack.
+;
+save_fsr0 equ    true        ;indicate whether save/restore FSR0 in sgl/high intr
+save_fsr1 equ    true        ;indicate whether save/restore FSR1 in sgl/high intr
+
+save_fsr0l equ   false       ;indicate whether save/restore FSR0 in low prio intr
+save_fsr1l equ   false       ;indicate whether save/restore FSR1 in low prio intr
+
+;**********
+;
+;   Derived constants.
+;
+
+;*******************************************************************************
+;
+;   Global state.
+;
+;   The following global state is in the normal register bank for global
+;   state.  The bank is GBANK, and GBANKADR is an address guaranteed to
+;   be within this bank.
+;
+         defram  gbankadr
+
+cnt1ms   res     1           ;incremented automatically every 1 millisecond
+phinc    res     3           ;phases increment each 1 ms
+
+         global  cnt1ms, phinc
+
+         iregs_define        ;define registers exclusively for interrupt routines
+
+;*******************************************************************************
+;
+;   Local state.  This is always in the same register bank as the global
+;   state.
+;
+/if debug_ledpatt then       ;port B moving LED pattern enabled ?
+cntled   res     1           ;ms ticks until update LEDs next
+leds     res     1           ;current LEDs state
+  /endif
+
+/if enab_phase then
+phase0   res     3           ;current phases angles
+phase1   res     3
+phase2   res     3
+  /endif
+
+
+.intr    code
+;*******************************************************************************
+;
+;   Subroutine INTR_INIT
+;
+;   Initialize the interrupt system and other state managed by this module.
+;
+         glbsub  intr_init, noregs
+;
+;   Initialize global state.
+;
+         dbankif gbankadr
+         clrf    cnt1ms
+;
+;   Initialize local state.
+;
+         dbankif gbankadr
+/if debug_ledpatt then       ;port B moving LED pattern enabled ?
+         loadk8  leds, 1     ;init LEDs state
+         movff   leds, portb
+         loadk8  cntled, ledms ;init time until next LEDs update
+  /endif
+
+/if enab_phase then
+         loadk24 phase0, 0   ;init the three phases evenly spaced
+         loadk24 phase1, [rnd [* 2 [/ 16777216 3]]]
+         loadk24 phase2, [rnd [* 1 [/ 16777216 3]]]
+  /endif
+;
+;   Set up timer 2 to produce a periodic 1ms interrupt.
+;
+         timer2_usec 1000    ;compute timer setup for 1ms period
+         timer2_setup_intr   ;set up the timer with interrupts
+;
+;   Enable interrupts.  The interrupt system was reset at startup to
+;   all interrupts disable, single interrupt priority, and all interrupt
+;   priorities set to the lowest.  Any interrupts that are needed have
+;   been individually configured, but interrupts are still globally
+;   disabled.
+;
+  if intr_priorities         ;using multiple priority interrupts ?
+         dbankif rcon
+         bsf     rcon, ipen  ;configure for multiple interrupt priorities
+         bsf     intcon, gieh ;enable high priority interrupts
+         bsf     intcon, giel ;enable low priority interrupts
+    else                     ;using a single interrupt priority
+         bsf     intcon, peie ;enable the peripheral interrupts
+         bsf     intcon, gie ;globally enable interrupts
+    endif
+
+         leaverest
+
+;*******************************************************************************
+;
+;   High priority or single interrupt service routine.
+;
+;   The processor executes a call to location 8 on an interrupt, and in
+;   addition globally disables interrupts.  These are re-enabled at the end
+;   of the ISR by the RETFIE instruction.
+;
+;   Note that subroutine calls must be minimized or avoided in the ISR.
+;   Since an interrupt can come at any time in the main code, any additional
+;   call stack locations used here are not available anywhere else.
+;
+;   The fast register stack is used to save/restore W, STATUS, and BSR
+;   for this interrupt.
+;
+  if intr_priorities
+.intr_high code  h'8'        ;high priority interrupt vector
+    else
+.intr_svc code   h'8'        ;single priority interrupt vector
+    endif
+         unbank              ;indicate the bank setting is unknown
+;
+;   W, STATUS, and BSR have been automatically saved onto the fast register
+;   stack by the interrupt hardware.
+;
+  if save_fsr0               ;need to save FSR0 ?
+         pushreg fsr0l
+         pushreg fsr0h
+    endif
+
+  if save_fsr1               ;need to save FSR1 ?
+         pushreg fsr1l
+         pushreg fsr1h
+    endif
+
+;*******************************************************************************
+;*******************************************************************************
+;
+;   Low priority interrupt service routine.
+;
+;   This section of code gets inserted if multiple priority interrupts
+;   are enabled.  The high priority interrupt vector is at 8, and
+;   the low priority vector at 18h.  We assume that the interrupt
+;   service routine requires more than the 8 instructions between the
+;   two vectors, so the high priority service routine must jump to a
+;   different location to avoid colliding with the low priority interrupt
+;   vector.  In that case, the high priority interrupt handler continues
+;   immediately after the low priority interrupt handler code.
+;
+;   If multiple interrupt priorites are disabled, then there is nothing
+;   special about location 18h and the interrupt handler can continue
+;   right over it without harm.
+;
+  if intr_priorities         ;multiple interrupt priorities in use ?
+         jump    intr_high_cont ;continue after low priority handler
+;
+;   Low priority interrupt service routine.  This routine can not use
+;   the fast call stack and must save/restore W, STATUS, and BSR
+;   explicitly.
+;
+.intr_low code   h'18'       ;low priority interrupt vector
+         unbank              ;indicate the bank setting is unknown
+         movwf   preinc2     ;save W onto the software stack
+         pushreg status      ;save STATUS onto the software stack
+         pushreg bsr         ;save BSR onto the software stack
+
+    if save_fsr0l            ;need to save FSR0 ?
+         pushreg fsr0l
+         pushreg fsr0h
+      endif
+
+    if save_fsr1l            ;need to save FSR1 ?
+         pushreg fsr1l
+         pushreg fsr1h
+      endif
+;
+;   W, STATUS, BSR, and the general FSRs (if enabled) have been saved.
+;   Now determine the interrupt condition and service it.
+;
+
+         reset               ;unexpected interrupt, should never happen
+;
+;   Done servicing the low priority interrupt condition.  Now restore
+;   to the state at the start of the interrupt and return from the
+;   interrupt.
+;
+intr_retl unbank             ;common low priority interrupt exit point
+
+    if save_fsr1l            ;need to restore FSR1 ?
+         popreg  fsr1h
+         popreg  fsr1l
+      endif
+
+    if save_fsr0l            ;need to restore FSR0 ?
+         popreg  fsr0h
+         popreg  fsr0l
+      endif
+
+         popreg  bsr         ;pop BSR from software stack to restore it
+         popreg  status      ;pop STATUS from software stack to restore it
+         movf    postdec2, w ;pop W from software stack to restore it
+         retfie              ;return from the interrupt
+;
+;   Continue the high priority interrupt service routine here.
+;
+intr_high_cont unbank
+    endif                    ;end of multiple interrupt priorities in use case
+;
+;   End of code inserted only if multiple interrupt priorities are in use.
+;
+;*******************************************************************************
+;*******************************************************************************
+;
+;   The high or single interrupt priority routine continues here.
+;
+;   W, STATUS, BSR, and the general FSRs (if enabled) have been saved.
+;   Now determine the interrupt condition and service it.
+;
+
+;
+;   Check for CCP2 interrupt.
+;
+         dbankif pir2
+         btfss   pir2, ccp2if
+         jump    no_ccp2_intr
+         gjump   intr_ccp2   ;handle interrupt, will go to INTR_RET_CCP2 on done
+no_ccp2_intr dbankis pir2
+;
+;   Check for timer 2 interrupt.
+;
+         dbankif pir1
+         btfsc   pir1, tmr2if
+         jump    intr_timer2 ;go handle timer 2 interrupt
+;
+;   Check for UART receive interrupt.
+;
+         dbankif pir1
+         btfss   pir1, rcif
+         jump    no_uart_recv
+         gjump   uart_intr_recv ;handle interrupt, will go to INTR_RET_UART on done
+no_uart_recv dbankis pir1
+
+         reset               ;unexpected interrupt, should never happen
+
+;*******************************************************************************
+;
+;   Timer 2 interrupt.  This interrupt occurs automatically every 1 ms.
+;
+intr_timer2 dbankis pir1
+         bcf     pir1, tmr2if ;clear the interrupt condition
+
+         dbankif gbankadr
+         incf    cnt1ms      ;update global 1ms tick counter
+;
+;   Update LEDs as appropriate.
+;
+/if debug_ledpatt then       ;port B moving LED pattern enabled ?
+         dbankif gbankadr
+         decfsz  cntled      ;one less ms until LED update
+         jump    done_leds   ;don't update LEDs this tick
+         loadk8  cntled, ledms ;reset time interval for next update
+
+         rlncf   leds        ;make updated LEDs value
+         movff   leds, portb ;update the display accordingly
+done_leds
+  /endif                     ;end of moving LED pattern enabled
+;
+;   Update the phase outputs if this is enabled by PHINC being non-zero.  When
+;   enabled the low three bits of port B are driven with square waves 120
+;   degrees out of phase.  PHINC is how much to advance the phases every 1 ms.
+;   PHINC and the phase accumulators are 24 bits, so 16,777,216 represents one
+;   full cycle.  PHINC is therefore proportional to the resulting frequency of
+;   each of the outputs.  For example, to get 1 Hz output PHINC must be set to
+;   16,777.
+;
+/if enab_phase then
+         dbankif gbankadr
+         movf    phinc+0, w
+         iorwf   phinc+1, w
+         iorwf   phinc+2, w
+         bz      done_phase  ;phase outputs disabled ?
+         ;
+         ;   Update each phase by adding PHINC into it.
+         ;
+         movf    phinc+0, w  ;update phase 0
+         addwf   phase0+0
+         movf    phinc+1, w
+         addwfc  phase0+1
+         movf    phinc+2, w
+         addwfc  phase0+2
+
+         movf    phinc+0, w  ;update phase 1
+         addwf   phase1+0
+         movf    phinc+1, w
+         addwfc  phase1+1
+         movf    phinc+2, w
+         addwfc  phase1+2
+
+         movf    phinc+0, w  ;update phase 2
+         addwf   phase2+0
+         movf    phinc+1, w
+         addwfc  phase2+1
+         movf    phinc+2, w
+         addwfc  phase2+2
+         ;
+         ;   Make the new value for the low three bits of LATB in IREG0.
+         ;
+         clrf    ireg0       ;init to all phase outputs off
+         rlcf    phase2+2, w
+         rlcf    ireg0
+         rlcf    phase1+2, w
+         rlcf    ireg0
+         rlcf    phase0+2, w
+         rlcf    ireg0
+         ;
+         ;   Update the phase output bits in LATB with their value in IREG0.
+         ;
+         movf    latb, w     ;get existing bits
+         andlw   b'11111000' ;clear the phase output bits
+         iorwf   ireg0, w    ;merge in the new phase output bits
+         movwf   latb        ;update to the new phase output values
+done_phase
+  /endif                     ;end of phase outputs enabled
+
+;*******************************************************************************
+;
+;   Done servicing the high priority interrupt condition.  Now restore
+;   to the state at the start of the interrupt and return from the
+;   interrupt.  W, STATUS, and BSR have been saved on the hardware fast
+;   register stack and will be restored as part of the RETFIE FAST
+;   instruction.
+;
+intr_ret unbank              ;common high/single priority interrupt exit point
+         glbent  intr_ret_ccp2 ;CCP2 interrupt routine returns here when done
+         glbent  intr_ret_uart ;UART interrupt routine returns here when done
+
+  if save_fsr1               ;need to restore FSR1 ?
+         popreg  fsr1h
+         popreg  fsr1l
+    endif
+
+  if save_fsr0               ;need to restore FSR0 ?
+         popreg  fsr0h
+         popreg  fsr0l
+    endif
+
+         retfie  fast        ;return from high/only priority interrupt
+
+         end

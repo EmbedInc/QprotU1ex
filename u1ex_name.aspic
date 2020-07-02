@@ -1,0 +1,194 @@
+;   ***************************************************************
+;   * Copyright (C) 2007, Embed Inc (http://www.embedinc.com)     *
+;   *                                                             *
+;   * Permission to copy this file is granted as long as this     *
+;   * copyright notice is included in its entirety at the         *
+;   * beginning of the file, whether the file is copied in whole  *
+;   * or in part and regardless of whether other information is   *
+;   * added to the copy.                                          *
+;   *                                                             *
+;   * The contents of this file may be used in any way,           *
+;   * commercial or otherwise.  This file is provided "as is",    *
+;   * and Embed Inc makes no claims of suitability for a          *
+;   * particular purpose nor assumes any liability resulting from *
+;   * its use.                                                    *
+;   ***************************************************************
+;
+;   Routines to set and get the user-definable name of this unit.
+;
+;   A task should have the non-volatile memory acquired before attempting
+;   to read or write the name.  This is done with FLAG_PROM.  See the
+;   explanation in the PROM module for details.
+;
+/include "u1ex.ins.aspic"
+
+;*******************************************************************************
+;
+;   Configuration constants.
+;
+lbank    equ     1           ;register bank for the local state of this module
+;
+;   Derived constants.
+;
+lbankadr equ     bankadr(lbank) ;address within local state register bank
+
+;*******************************************************************************
+;
+;   Default name string in EEPROM.
+;
+.ee_name code_pack ee_start + ee_namelen
+         db      4           ;number of chars in the string
+         db      "U1EX"      ;the default name string
+
+;*******************************************************************************
+;
+;   Global state.  All this state is assumed to be in the GBANK register
+;   bank by other modules.
+;
+         defram  gbankadr
+
+
+;*******************************************************************************
+;
+;   Local state.
+;
+         defram  lbankadr
+
+nleft    res     1           ;number of name characters left to read or write
+
+.name    code
+
+;*******************************************************************************
+;
+;   Subroutine NAME_INIT
+;
+;   Initialize the hardware and software state managed by this module.
+;
+         glbsub  name_init, noregs
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine NAME_GET_START
+;
+;   Initialize for reading the name.  The number of name string characters is
+;   returned in REG0.  This is the number of times NAME_GET_CHAR can be called
+;   to receive a valid character.
+;
+;   This implementation locks the PROM routines until NAME_GET_END is called.
+;
+         glbsub  name_get_start, regf1 | regf2
+
+         gcall   prom_lock   ;acquire exclusive access to the PROM_xxx routines
+
+         loadk16 reg1, ee_namelen ;set EEPROM address to name string length byte
+         gcall   prom_adr
+
+         gcall   prom_read   ;get the name string length into REG0
+         movf    reg0, w     ;get the length
+         sublw   namemaxlen  ;compare to max valid length
+         skip_wle            ;stored length is valid ?
+         clrf    reg0        ;no, pass back the empty string
+         movff   reg0, nleft ;init number of name chars left to pass back
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine NAME_GET_CHAR
+;
+;   Get the next name character into REG0.  NULL (zero) is returned indefinitely
+;   after the end of the name string.  Subroutine NAME_GET_START must be called
+;   to set up getting the first name character.
+;
+         glbsub  name_get_char, noregs
+
+         clrf    reg0        ;init for returning past end of string
+         dbankif lbankadr
+         movf    nleft
+         skip_nz             ;at least one more name char left to return ?
+         jump    gch_leave   ;no, return will NULL
+         decf    nleft       ;count one less character left
+
+         gcall   prom_read   ;read the next name character into REG0
+
+gch_leave unbank             ;common exit point
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine NAME_GET_END
+;
+;   End getting the name string.  This deallocates any system resources claimed
+;   by NAME_GET_START.
+;
+         glbent  name_get_end
+         extern  prom_unlock
+         gjump   prom_unlock ;release the PROM lock and return to the caller
+
+;*******************************************************************************
+;
+;   Subroutine NAME_SET_START
+;
+;   Initialize of writing the name.  FLAG_PROM should be held by this task.
+;
+         glbsub  name_set_start, regf1 | regf2
+
+         gcall   prom_lock   ;acquire exclusive access to the PROM_xxx routines
+
+         loadk16 reg1, ee_name ;set EEPROM address to first name string character
+         gcall   prom_adr
+
+         dbankif lbankadr
+         movlw   namemaxlen  ;init max characters that can still be written
+         movwf   nleft
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine NAME_SET_CHAR
+;
+;   Write the character in REG0 as the next name string character.  The character
+;   is ignored if the maximum name string length has already been reached.
+;   Subroutine NAME_SET_START must be called to set up for writing the first
+;   character, and NAME_SET_END must be called after writing the last.
+;
+         glbsub  name_set_char, noregs
+
+         dbankif lbankadr
+         movf    nleft
+         skip_nz             ;room for at least one more character ?
+         jump    sch_leave   ;no, nothing more to do
+         decf    nleft       ;count one less name character after this one
+
+         gcall   prom_write  ;write the character in REG0 to the EEPROM
+
+sch_leave unbank             ;common exit point
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine NAME_SET_END
+;
+;   End writing the name.  The stored name string is not defined until this
+;   routine is called after NAME_SET_START and any number of NAME_SET_CHAR.
+;   FLAG_PROM can be released after this call returns.
+;
+         glbsub  name_set_end, regf0 | regf1 | regf2
+
+         loadk16 reg1, ee_namelen ;set EEPROM address to name string length byte
+         gcall   prom_adr
+
+         dbankif lbankadr
+         movf    nleft, w    ;get number of unused name string chars
+         sublw   namemaxlen  ;make number of characters in the new string
+         movwf   reg0        ;pass the byte value to write
+         gcall   prom_write  ;write the string length byte
+
+         gcall   prom_flush  ;guarantee all pending EEPROM writes actually performed
+         gcall   prom_unlock ;release the exclusive lock on the PROM_xxx routines
+         leaverest
+
+         end

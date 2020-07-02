@@ -1,0 +1,446 @@
+;   ***************************************************************
+;   * Copyright (C) 2011, Embed Inc (http://www.embedinc.com)     *
+;   *                                                             *
+;   * Permission to copy this file is granted as long as this     *
+;   * copyright notice is included in its entirety at the         *
+;   * beginning of the file, whether the file is copied in whole  *
+;   * or in part and regardless of whether other information is   *
+;   * added to the copy.                                          *
+;   *                                                             *
+;   * The contents of this file may be used in any way,           *
+;   * commercial or otherwise.  This file is provided "as is",    *
+;   * and Embed Inc makes no claims of suitability for a          *
+;   * particular purpose nor assumes any liability resulting from *
+;   * its use.                                                    *
+;   ***************************************************************
+;
+;   Procedural interface to the IIC bus.  This processor is the bus master.
+;   This version controls the IIC bus in firmware without the IIC hardware being
+;   used.  Full clock stretching by slaves is supported.
+;
+;   The following I/O lines must be defined:
+;
+;     SCL  -  IIC clock line, positive logic.  Will be set up as needed when IIC
+;             capability is turned on.
+;
+;     SDA  -  IIC data line, positive logic.  Will be set up as needed when IIC
+;             capability is turned on.
+;
+;   The following routines are exported.  See their individual header comments
+;   for details:
+;
+;     IIC_ON  -  Enable use of the IIC bus.  The IIC I/O pins will be configured
+;       as required for IIC operation.  Other code must not modify the IIC I/O
+;       pins after this call, or the IIC bus may not function as intended.
+;
+;     IIC_START_PUT  -  Starts a new IIC write sequence.  Sets FLAG_IICACK
+;       according to ACK bit received.
+;
+;     IIC_PUT  -  Writes byte of a write sequence to the bus.  Sets FLAG_IICACK
+;       according to ACK bit received.
+;
+;     IIC_START_GET  -  Starts a new IIC read sequence.  Sets FLAG_IICACK
+;       according to ACK bit received.
+;
+;     IIC_GET  -  Reads a byte of a read sequence from the bus.  Does not send
+;       ACK bit.
+;
+;     IIC_ACK  -  Sends positive ACK (ACK bit = 0).
+;
+;     IIC_NACK  -  Sends negative ACK (ACK bit = 1).
+;
+;     IIC_STOP  -  Writes bus stop condition and then leaves the lines floating.
+;
+;   The following global flag bits must be defined:
+;
+;     FLAG_IICACK  -  Used to communicate the ACK bit value both for reading and
+;       writing.
+;
+/include "u1ex.ins.aspic"
+
+         extern_flags        ;declare global flag bits EXTERN
+
+;*******************************************************************************
+;
+;   Configuration constants.
+;
+/const   iicrate real = 100e3 ;max allowed IIC bitrate, bits per second
+lbank    equ     0           ;register bank for the local state of this module
+;
+;   Derived constants.
+;
+/const   holdt   real = [/ 0.5 iicrate] ;min hold seconds between state changes
+/const   holdcy  integer = [trunc [+ [* freq_inst holdt] .99]] ;min instr hold time
+lbankadr equ     bankadr(lbank) ;address within local state register bank
+
+;*******************************************************************************
+;
+;   Global state.  All this state is assumed to be in the GBANK register
+;   bank by other modules.
+;
+         defram  gbankadr
+
+
+;*******************************************************************************
+;
+;   Local state.
+;
+         defram  lbankadr
+
+
+.iic     code
+
+;*******************************************************************************
+;
+;   Macro SCL_LOW
+;
+;   Drive the SCL (clock) line low.
+;
+scl_low  macro
+         dbankif scl_tris
+         bcf     scl_tris, scl_bit
+         endm
+
+;*******************************************************************************
+;
+;   Macro SCL_HIGH
+;
+;   Let the SCL (clock) line float high.
+;
+scl_high macro
+         dbankif scl_tris
+         bsf     scl_tris, scl_bit
+         endm
+
+;*******************************************************************************
+;
+;   Macro SDA_LOW
+;
+;   Drive the SDA (data) line low.
+;
+sda_low  macro
+         dbankif sda_tris
+         bcf     sda_tris, sda_bit
+         endm
+
+;*******************************************************************************
+;
+;   Macro SDA_HIGH
+;
+;   Let the SDA (data) line float high.
+;
+sda_high macro
+         dbankif sda_tris
+         bsf     sda_tris, sda_bit
+         endm
+
+;*******************************************************************************
+;
+;   Macro SKIP_SCL_LOW
+;
+;   Skip the next instruction if the SCL line is low.
+;
+skip_scl_low macro
+         dbankif scl_reg
+         btfsc   scl_reg, scl_bit
+         endm
+
+;*******************************************************************************
+;
+;   Macro SKIP_SCL_HIGH
+;
+;   Skip the next instruction if the SCL line is high.
+;
+skip_scl_high macro
+         dbankif scl_reg
+         btfss   scl_reg, scl_bit
+         endm
+
+;*******************************************************************************
+;
+;   Macro SKIP_SDA_LOW
+;
+;   Skip the next instruction if the SDA line is low.
+;
+skip_sda_low macro
+         dbankif sda_reg
+         btfsc   sda_reg, sda_bit
+         endm
+
+;*******************************************************************************
+;
+;   Macro SKIP_SDA_HIGH
+;
+;   Skip the next instruction if the SDA line is high.
+;
+skip_sda_high macro
+         dbankif sda_reg
+         btfss   sda_reg, sda_bit
+         endm
+
+;*******************************************************************************
+;
+;   Local subroutine HOLD
+;
+;   Wait for the minimum required time between any two IIC bus edges for the bit
+;   rate defined by the constant IICRATE at the top of this module.  There must
+;   be at least 1/2 bit time wait from a IIC bus state change until the next
+;   state changed caused by this firmware.  This routine guarantees that wait
+;   time.  IIC line can be changed in the instruction immediately before the
+;   call to this routine and again immediately after.
+;
+         locsub  hold, noregs
+
+         waitcy  [max 0 [- holdcy 5]]
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Local subroutine WAIT_CLOCK
+;
+;   Wait for the SCL (clock) line to go high.  The clock line might not go high
+;   immediately when we release it due to clock stretching by the slave.  This
+;   routine waits indefinitely for the clock line to be released.  It will let
+;   other tasks run while waiting.  No task swap is performed if the clock line
+;   is immediately high on entry.
+;
+         locsub  wait_clock, noregs
+
+         skip_scl_low        ;clock line is low, will have to wait ?
+         return              ;is high right away
+
+wcl_loop unbank              ;back here to check the clock line again
+         gcall   task_yield_save ;give other tasks a chance to run
+         skip_scl_high       ;clock line is now high ?
+         jump    wcl_loop    ;no, go back and wait some more
+
+         mcall   hold        ;guarantee minimum time before next state change
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine IIC_INIT
+;
+;   Initialize the hardware and software state managed by this module.
+;
+         glbsub  iic_init, noregs
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine IIC_ON
+;
+;   Turn on the IIC bus.  This sets up the I/O pins as required for IIC bus
+;   operation.  These pins must not be altered by code outside this module after
+;   this call.  This routine returns quickly if the IIC bus was previously
+;   turned on.
+;
+         glbsub  iic_on, noregs
+
+         dbankif gbankadr
+         btfsc   flag_iicon  ;not already on
+         jump    ion_leave   ;is already on, nothing more to do
+         bsf     flag_iicon  ;will be on now
+
+         dbankif scl_tris
+         bsf     scl_tris, scl_bit ;set the bus lines to high impedance
+         dbankif sda_tris
+         bsf     sda_tris, sda_bit
+
+         dbankif scl_lat
+         bcf     scl_lat, scl_bit ;get data value ready for driving low
+         dbankif sda_lat
+         bcf     sda_lat, sda_bit
+
+ion_leave unbank
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine IIC_START_PUT
+;
+;   Send a IIC start condition followed by the address byte indicating this will
+;   be a write sequence.  The slave address must be in the low 7 bits of REG0.
+;   FLAG_IICACK will be set according to whether the slave acknowledged the
+;   address byte or not.
+;
+         glbsub  iic_start_put, regf0 | regf1
+
+         bcf     status, c   ;low address byte bit value, indicates write
+;
+;   Common code to send a IIC start condition, then send address byte and read
+;   the ACK from the slave.  The 7 bit address is in the low bits of REG0 and
+;   the read/write bit is in C.  The saved registers on the data stack must
+;   be the same as saved for this routine (see above).
+;
+do_start unbank
+         rlcf    reg0        ;move address in high bits read/write in low bit
+
+         scl_high            ;make sure both lines start out high (should already be)
+         mcall   hold
+         mcall   wait_clock
+         sda_high
+         mcall   hold
+
+         sda_low             ;start condition: falling SDA with SCL high
+         mcall   hold
+         scl_low             ;hold clock line low
+         mcall   hold
+;
+;   Common code to send the byte in REG0, then read the ACK bit and return it in
+;   FLAG_IICACK.  The saved registers on the data stack must match those saved
+;   by this routine (see above).
+;
+;   It is assumed that we are holding the clock line low.
+;
+send_byte unbank
+
+         movlw   8           ;init number of bits left to send
+         movwf   reg1
+sb_loop  unbank              ;back here to send each new bit
+         btfsc   reg0, 7     ;this data bit is 0 ?
+         jump    send1       ;no, send a 1 bit
+         sda_low             ;set the data line to 0
+         jump    done_setdat
+send1    unbank
+         sda_high            ;set the data line to 1
+done_setdat unbank           ;the data line is set for this bit value
+         rlcf    reg0        ;move the next bit into position
+         mcall   hold
+         scl_high            ;clock the data bit onto the bus
+         mcall   hold
+         mcall   wait_clock
+         scl_low
+         mcall   hold
+         decfsz  reg1        ;count one less bit left to send
+         jump    sb_loop     ;back to send next bit
+;
+;   Receive the ACK bit and set FLAG_IICACK accordingly.
+;
+         sda_high            ;release the data line
+         mcall   hold
+         scl_high            ;leading edge of ACK bit clock
+         mcall   hold
+         mcall   wait_clock
+         dbankif gbankadr
+         bcf     flag_iicack ;init to ACK not received
+         skip_sda_low        ;did get ACK ?
+         jump    no_ack      ;no
+         dbankif gbankadr
+         bsf     flag_iicack ;indicate ACK received
+no_ack   unbank              ;skip to here on no ACK received
+
+         scl_low             ;trailing edge of the ACK bit clock pulse
+         mcall   hold
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine IIC_PUT
+;
+;   Send the byte in REG0 to the slave.  FLAG_IICACK is set according to whether
+;   the slave ACKed the byte or not.
+;
+         glbsub  iic_put, regf0 | regf1 ;must be same registers as IIC_START_PUT
+
+         jump    send_byte   ;to common send byte and get ACK routine
+
+;*******************************************************************************
+;
+;   Subroutine IIC_START_GET
+;
+;   Start a new IIC read sequence.  The slave address must be in the low 7 bits
+;   of REG0.  FLAG_IICACK will be set according to whether the slave ACKed the
+;   address byte.
+;
+         glbsub  iic_start_get, regf0 | regf1 ;must be same regs as IIC_START_PUT
+
+         bsf     status, c   ;low address byte bit value, indicates read
+         jump    do_start    ;to common code to do start and send address byte
+
+;*******************************************************************************
+;
+;   Subroutine IIC_GET
+;
+;   Read the next byte from the IIC bus into REG0.
+;
+         glbsub  iic_get, regf1
+
+         sda_high            ;release the data line
+         movlw   8           ;init number of bits left to read
+         movwf   reg1
+
+iig_loop unbank              ;back here to read each new bit
+         rlcf    reg0        ;make room for the new bit in the LSB
+         bcf     reg0, 0     ;init the new bit to 0
+         mcall   hold
+         scl_high            ;leading clock edge of bit
+         mcall   hold
+         mcall   wait_clock
+         skip_sda_low        ;bit really is 0 ?
+         bsf     reg0, 0     ;no, set it to 1
+         scl_low             ;trailing clock edge of bit
+         decfsz  reg1        ;count one less bit left to read
+         jump    iig_loop    ;back to read the next bit
+
+         mcall   hold
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine IIC_ACK
+;
+;   Sends positive ACK bit.  The ACK bit value will be 0.
+;
+         glbsub  iic_ack, noregs
+
+         sda_low             ;set data line for positive ACK
+;
+;   Common code to send the current data line state as the ACK bit, then return.
+;   The saved registers on the data stack must be the same as for IIC_ACK (see
+;   above).
+;
+send_ack unbank
+         mcall   hold
+         scl_high            ;ACK bit leading clock edge
+         mcall   hold
+         mcall   wait_clock
+         scl_low             ;ACK bit trailing clock edge
+         sda_high            ;release the data line to let slave drive it again
+         mcall   hold
+
+         leaverest
+
+;*******************************************************************************
+;
+;   Subroutine IIC_NACK
+;
+;   Sends negative ACK bit.  The ACK bit value will be 1.
+;
+         glbsub  iic_nack, noregs
+
+         sda_high            ;set data line for negative ACK
+         jump    send_ack    ;to common code to send the ACK bit and return
+
+;*******************************************************************************
+;
+;   Subroutine IIC_STOP
+;
+;   Write IIC bus stop sequence, then leave both lines floating high.
+;
+         glbsub  iic_stop, noregs
+
+         scl_low             ;make sure clock is low, should be already
+         sda_low             ;make sure the data line is held low
+         mcall   hold
+         scl_high            ;release the clock line
+         mcall   hold
+         mcall   wait_clock
+         sda_high            ;rising data line with clock high is bus stop
+         mcall   hold
+
+         leaverest
+
+         end

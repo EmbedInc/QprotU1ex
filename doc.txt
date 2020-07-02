@@ -1,0 +1,378 @@
+                         Embed Inc U1EX Firmware
+                              2 July 2020
+
+The purpose of the U1EX firmware is to provide a example of using the
+Embed Inc USB drivers for the USB peripheral of a Microchip PIC 18F2550
+and related microcontrollers.  The firmware is intended to run on a Embed
+Inc ReadyBoard-02.
+
+
+USB Protocol
+
+  The device communicates over the USB using endpoints 0 and 1.
+
+  Both endpoints 0 (in and out) are reserved exclusively for use by the
+  operating system and host device driver.  Both directions use the
+  control transfer mode as required by the USB spec.
+
+  Endpoint 1 is reserved for application use.  Both directions use the
+  bulk transfer mode with a buffer size of 64 bytes.  The ping-pong buffer
+  mode of the SIE hardware is used.  Since two buffers must be considered
+  in use by the SIE at any time, three buffers are used per endpoint so
+  that one is always available for the software to drain (OUT endpoint) or
+  fill (IN endpoint).
+
+  The application protocol (via pipe 1) wraps data in packets in each
+  direction.  Each packet starts with a opcode byte, which may then be
+  followed by additional bytes as defined by that opcode.  Packets from
+  the host to the device are referred to as "commands", and packets from
+  the device to the host are referred to as "responses", although
+  responses may not always be in direct response to a command.
+
+  In the command and response descriptions below, each data item is a
+  unsigned 8 bit byte unless otherwise specified.  Multi-byte values are
+  transferred in least to most significant byte order unless otherwise
+  specified.
+
+  All command and response opcodes not listed below are reserved, and may
+  be implemented in other versions of the firmware.  Unused command opcode
+  bytes are ignored, but this should not be relied on since they may have
+  meaning in other versions of the firmware.
+
+
+Commands
+
+  NOP: 0
+
+    This command is ignored.  This is the only opcode guaranteed to be
+    ignored since reserved opcodes may be implemented in other versions of
+    this firwmware.
+
+  LEDON (version 1-2): 1
+
+    Turn on the LED.
+
+  LEDOFF (version 1-2): 2
+
+    Turn off the LED.
+
+  FWVER (version 2-N): 3
+
+    Request the 1-255 firmware version number.  A FWVER response is sent.
+
+  NAMESET (version 2-N): 4 n string
+
+    Set the name of this unit.  The first data byte is the number of name
+    characters, followed by the name characters.  There must be exactly N
+    name characters.  The actual stored name string will be truncated to
+    80 characters.
+
+  NAMEGET (version 2-N): 5
+
+    Request the user-settable unit name.  A NAME response is sent.
+
+  HOUT (version 3): 6 val
+
+    Specify the signed 8 bit value to drive the H bridge with.  Two
+    opposite legs of the H bridge are selected based on the sign, and
+    these legs are driven with PWM based on the magnitude.
+
+  HOFF (version 3): 7
+
+    Turn off all legs of the H bridge.
+
+  HSAMP (version 3): 8 n dat ... dat
+
+    Send successive output samples that the H bridge is to be driven with.
+    Each sample will be driven onto the output for a fixed amount of time.
+    The H bridge is shut off when all samples are exhausted.  The samples
+    are not immediately driven onto the output.  This command completes
+    when the samples are queued for output.  If successive HSAMP commands
+    are sent fast enough, then the successive samples will form a
+    continuous ouput signal with no gaps.
+
+  SETB (version 4-N): 9 val
+
+    Set port B to the indicated value.
+
+  SPI1 (version 7-N): 10 nbits dat32
+
+    Performs a whole SPI frame to slave 1 with up to 32 bits being
+    transferred in each direction.  NBITS is the number of bits to
+    transfer.  The data bits are contained in the low NBITS bits of DAT32.
+    The remaining high bits, if any, of DAT32 are ignored.
+
+    A complete SPI sequence is generated.  The slave select 1 line is
+    first pulled low, then each bit transferred on the rising edge of the
+    SPI clock, then the slave select 1 line is driven to its inactive
+    state of high again.  Data sent from the device is also sampled on the
+    rising edge of the SPI clock.  A SPI1 response is sent with the
+    received data.
+
+  SPI2 (version 9-N): 11 nbits dat32
+
+    Like SPI1, except that slave select line 2 is asserted during the
+    frame instead of slave select line 1.  A SPI2 response is sent with
+    the received data.
+
+  IICW (version 11-N): 12 adr ndat dat ... dat
+
+    Send a IIC bus write message to the slave at address ADR.  NDAT is the
+    number of data bytes to send, with the data bytes following.  Exactly
+    NDAT data bytes must follow NDAT.
+
+    The message is aborted whenever the slave fails to ACK a byte,
+    including the address byte.  Otherwise, the message is ended when all
+    the data bytes have been sent.  A IICW response is sent after the
+    message is completed.
+
+    The IIC bus lines are:
+
+      RB0  -  SDA (data)
+      RB1  -  SCL (clock)
+
+    These lines are initialized as regular port B outputs on powerup or
+    reset.  The first IICW command switches them to being IIC bus lines.
+    The IIC lines must be externally pulled up for the bus to function. In
+    IIC mode, these lines are either driven low or are left floating.
+
+  IICR (version 12-N): 13 adr ndat
+
+    Perform a IIC bus read sequence as master.  ADR is the 7-bit slave
+    address.  NDAT is the number of data bytes to read.  This value will
+    be silently clipped to the maximum the firmware can support, which may
+    vary between versions.  This maximum is 64 bytes in version 12, which
+    is the first version that includes this command.  A IICR response is
+    always sent after the IIC message is ended.
+
+  PHINC (version 13-N): 14 inc24
+
+    Set the automatic phase outputs angle increment per millisecond.  A
+    full circle is represented by 2^24, which is 16,777,216.  To guarantee
+    3 distinct phase outputs, the increment should not exceed 1/6 of a
+    circle, or 2,796,202, which results in 166.67 Hz output frequency.
+
+    A INC24 value of 0 disables the automatic phase outputs and does not
+    change the state of the phase lines each 1 ms interrupt.  A non-zero
+    value dedicates RB0-RB2 to the phase outputs until this is explicitly
+    changed.
+
+
+Responses
+
+  NOP: 0
+
+    This response must always be ignored by the host.  This version of
+    firmware does not actually produce NOP responses, but proper host
+    software should accept and ignore them for compatibility with all
+    versions.
+
+  FWVER: 1 version [sequence]
+
+    Indicates the 1-255 version number of this firmware.  These are the
+    same U1EX version numbers are described in the "Firmware versions"
+    section below.  If VERSION is 4 or greater then SEQUENCE is also sent
+    which is the firmware build sequence number.
+
+  NAME: 2 n string
+
+    Indicates the user-settable name of the unit.  N is the number of
+    characters in the name.  Exactly N characters follow N.
+
+  SPI1: 3 nbits dat32
+
+    Indicates the data received from the slave device as a result of a
+    SPI1 command.  NBITS is the number of bits that were received, which
+    is always 0 to 32.  DAT32 is a 32 bit word containing the bits.  The
+    received data is justified in the low bits of DAT32 with the last
+    received bit in the LSB.  The remaning unused high bits of DAT32, if
+    any, are set to 0.
+
+  SPI2: 4 nbits dat32
+
+    Like SPI1 except reports data received from a SPI frame caused by the
+    SPI2 command instead of the SPI1 command.  The SPI1 command asserts
+    slave select 1 during the frame and the SPI2 command asserts slave
+    select 2.
+
+  IICW: 5 stat ndat
+
+    Indicates the result of sending a IIC write message.  This response is
+    sent upon completion of each IICW command.  STAT provides some status
+    information about the message, and NDAT is the number of data bytes
+    actually sent.  This will be less than the number provided in the IICW
+    command if the slave NACKed a byte before the end of the message.  The
+    bits of STAT mean:
+
+      Bit 0  -  ACK was received for all bytes of the message.  When less
+        bytes were sent than intended, this bit is always 0 because the
+        slave aborted the message early by NACKing it.  Once a NACK is
+        received, the message was terminated.  If all data bytes were
+        sent, then this bit indicates that a ACK was received for the last
+        byte.
+
+    The remaining bits of STAT are reserved and sent as 0 for now.  They
+    may be defined in future versions of the firmware.
+
+  IICR: 6 stat ndat dat ... dat
+
+    Indicates the result of a IIC read message.  This response is sent
+    upon completion of each IICR command.  STAT provides some status
+    information about the message, and NDAT is the number of data bytes
+    actually received.  The bits of STAT mean:
+
+      Bit 0  -  ACK was received for the address byte.  In this case, the
+        data bytes are read with the last one NACKed by the master.  If
+        the address byte was not ACKed, then the IIC message is ended
+        immediately and no data bytes are read.  In that case, NDAT will
+        be zero.
+
+    The remaining bits of STAT are reserved and sent as 0 for now.  They
+    may be defined in future versions of the firmware.
+
+    NDAT is the actual number of data bytes read.  Exactly NDAT data bytes
+    follow.
+
+  DCC: 7 n dat1 ... datN
+
+    Reports one recieved and fully validated DCC (Digital Command and
+    Control, used to control rolling stock of model trains) packet.  N is
+    the number of data bytes in the packet, which does not include the
+    "error" (checksum) byte.  Exactly N data bytes follow N.  N is
+    guaranteed to be at least 1.  This response is only sent if the error
+    byte was valid.
+
+
+Firmware versions
+
+  U1EX 1, 25 Aug 2007
+
+    Implements only commands 0, 1, and 2 and no responses.  Uses the
+    USBProg VID/PID to allow testing with TEST_USBPROG for now.  This will
+    be changed when the U1EX host software is created.
+
+  U1EX 2, 28 Aug 2007
+
+    Added FWVER, NAMESET, NAMEGET commands, and FWVER and NAME responses.
+    Added NOP response to documentation although this version does not
+    produce a NOP response.  The VID/PID has been changed to the
+    officially allocated VID/PID for this firmware.  VID = 5024 (16C0h),
+    PID = 1481 (05C9h).  Added USB_RESET flag set in USB module on a USB
+    reset received.  Now used in main loop to set flag to cause command
+    processor to reset.
+
+  U1EX 3, 10 Feb 2008
+
+    Modified for running on ReadyBoard-02 instead of USBProg.  Port B is
+    uncommitted.  Added H bridge drive capability that could be used to
+    drive a speaker.  Added sound and WAV file output capability to
+    TEST_U1EX to demonstrate the capability.
+
+  U1EX 4 seq 5, 19 Aug 2008
+
+    Removed WAV file commands.  Added firmware sequence number to FWVER
+    response.  Added SETB command.  Tested and works on ReadyBoard-02.
+
+  U1EX 5 seq 2, 25 Sep 2008
+
+    Updated to latest build method, including automatic build sequence
+    numbering via the STD_DEF.INS.ASPIC file with the MAKE_VERSION switch,
+    and only copying, not tranlating the standard include files.  Removed
+    the SEQUENCE module from the build.  Functionally identical to version
+    4. Supports commands NOP, FWVER, NAMESET, NAMEGET, and SETB.  Commands
+    LEDON, LEDOFF, HOUT, HOFF, and HSAMP have been removed.
+
+  U1EX 6 seq 10, 7 Mar 2011
+
+    Updated to use the Embed Inc multi-tasking system.  All the background
+    USB activity is now run in its own task so the application need not be
+    aware of it except to call TASK_YIELD periodically.  The host command
+    processor is now also run from its own task.  Previously, it was run
+    as a pseudo-task from the main event loop.  This version is
+    functionally identical to U1EX 5.
+
+  U1EX 7 seq 7, 8 Mar 2011
+
+    Added SPI1 command and response.  Seems to work.  The SPI lines are:
+
+      RC0  -  clock
+      RC1  -  data out
+      RC2  -  data in
+      RA0  -  slave select 1
+
+    The clock frequency is about 780 kHz.  The clock starts and ends low
+    in the frame.  The output data is valid for at least 300ns before the
+    clock rising edge and 300ns after the falling edge.  The data input
+    line is sampled while the clock is high shortly after the rising edge.
+
+  U1EX 8 seq 2, 9 Mar 2011
+
+    Added RA1 as SPI slave select 2 output line.  SPI port 2 is not
+    implemented yet.  For now only the slave select line is driven high.
+
+  U1EX 9 seq 4, 11 Mar 2011
+
+    Added SPI2 command and response.  To summarize from the previous two
+    releases, all the SPI lines are:
+
+      RC0  -  clock
+      RC1  -  data out
+      RC2  -  data in
+      RA0  -  slave select 1
+      RA1  -  slave select 2
+
+  U1EX 10 seq 7, 14 Jun 2011
+
+    Added periodic 1ms interrupt and global 1ms tick counter.  Added build
+    switch DEBUG_LEDPATT.  Setting this to TRUE causes a shifting bit
+    pattern to be output on port B.  It is assumed port B is connected to
+    the LEDs so that the pattern becomes visible.  This build switch is
+    FALSE in this version, so port B is not automatically driven with the
+    shifting pattern.
+
+  U1EX 11 seq 12, 11 Aug 2011
+
+    Added IICW command and response.  Powers up with port B being all
+    driven low and the SETB command working as before.  However, on the
+    first IICW command RB1 becomes the IIC bus clock (SCL) and RB0 the IIC
+    data line (SDA).  These must be externally pulled for the IIC bus to
+    function.
+
+  U1EX 12 seq 10, 5 Sep 2011
+
+    Added IICR command and response, which allows reading from the IIC bus
+    as a master.  Uses same IIC lines as previous version (RB0 is SDA, RB1
+    is SCL).  The maximum number of data bytes to read per IIC message is
+    limited to 64 in this version.
+
+  U1EX 13 seq 3, 17 Jul 2012
+
+    Added PHINC command.  This allows for the low 3 bits of port B to be
+    driven as 3-phase outputs up to 166 Hz.
+
+  U1EX 14 seq 26, 25 Oct 2013
+
+    Added DCC (model train Digital Command and Control) decoding.  The DCC
+    must be resolved to a single digital signal that drives RB3.  All
+    valid DCC packets are reported to the host over the USB.  Added DCC
+    response.
+
+  U1EX 15 seq 10, 16 Nov 2014
+
+    Restructured the DCC detection module and how complete packets are
+    sent to the host.  Eliminated DCC decoding thread.  Complete DCC
+    packets are now received and validated in the DCC interrupt, then the
+    foreground code notified.  Received packets are now sent to the host
+    as a sequence of individual events in the main event loop.  The total
+    number of tasks was reduced from 4 to 3.  This change was made to
+    match the code in the new dedicated DCC sniffer, which contains a much
+    smaller processor.
+
+    No functional changes from version 14.
+
+  U1EX 16 seq 29, 2 Jul 2020
+
+    Added BLIP capability, although it is disabled in this version.  The
+    BLIP feature causes a positive-going pulse on RB2.  The period and
+    pulse duration are set with constants in the main include file.
+    Resolution is 1 ms, and maximum duration is 65.535 seconds.

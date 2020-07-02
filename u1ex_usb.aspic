@@ -1,0 +1,8 @@
+;   USB I/O routines.
+;
+/include "u1ex.ins.aspic"
+
+lbank    equ     2           ;register bank for the local state of this module
+
+/include "(cog)src/pic/usb.ins.aspic"
+         end

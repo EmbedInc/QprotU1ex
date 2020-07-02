@@ -1,0 +1,486 @@
+;   ***************************************************************
+;   * Copyright (C) 2010, Embed Inc (http://www.embedinc.com)     *
+;   *                                                             *
+;   * Permission to copy this file is granted as long as this     *
+;   * copyright notice is included in its entirety at the         *
+;   * beginning of the file, whether the file is copied in whole  *
+;   * or in part and regardless of whether other information is   *
+;   * added to the copy.                                          *
+;   *                                                             *
+;   * The contents of this file may be used in any way,           *
+;   * commercial or otherwise.  This file is provided "as is",    *
+;   * and Embed Inc makes no claims of suitability for a          *
+;   * particular purpose nor assumes any liability resulting from *
+;   * its use.                                                    *
+;   ***************************************************************
+;
+;   This module decodes the signal on the alternate CCP2 input (RB3) as a DCC
+;   (digital command and control) bit stream.  DCC is used to send commands to
+;   rolling stock of model trains.  When a valid DCC packet is detected, it is
+;   sent to the host over the USB.
+;
+;   Timer 3 will be used with CCP2 in capture mode to measure the time of each
+;   DCC levels.
+;
+/include "u1ex.ins.aspic"
+
+         extern  intr_ret_ccp2 ;CCP2 interrupt routine jumps here when done
+
+         extern_flags        ;declare global flag bits EXTERN
+
+;*******************************************************************************
+;
+;   Constants that reflect external physical realities.  These are not design
+;   choices in this firmware.
+;
+/const   tsmin   real = 52e-6 ;min acceptable short bit time, seconds
+/const   tsmax   real = 64e-6 ;max acceptable short bit time, seconds
+/const   tlmin   real = 90e-6 ;min acceptable long bit time, seconds
+/const   tlmax   real = 10e-3 ;max acceptable long bit time, seconds
+/const   terr    real = 2e-6 ;our DCC transition time measurement error, seconds
+/const   npream  integer = 22 ;min consecutive short levels for valid preamble
+;
+;   Configuration constants.
+;
+/const   maxdcc  integer = 8 ;max total DCC data (not error) bytes per packet
+lbank    equ     2           ;register bank for the local state of this module
+;
+;   Derived constants.
+;
+/block                       ;context for temporary variables for computations
+  /var local ii integer
+  /var local r real
+  /var local s string
+
+  //   Determine the timer prescaler.  It will be selected so that a little more
+  //   than the maximum long time can be measured by the 16 bit timer (65535
+  //   ticks).  The timer is run from the instruction clock with prescaler
+  //   choices of 1, 2, 4, or 8.
+  //
+  /set ii 1                  ;init prescaler value to try
+  /loop
+    /set r [/ ii freq_inst]  ;timer increment period
+    /set r [* r 65536]       ;timer wrap period
+    /if [>= r [* tlmax 1.2]] then ;enough for long bit with some margin ?
+      /quit                  ;II is prescaler divide value
+      /endif
+    /set ii [* ii 2]         ;make next prescaler value
+    /if [> ii 8] then        ;exhausted all possible prescaler values ?
+      /set s ''
+      /set s str [s "DCC long level of " [eng tlmax] "s "]
+      /set s str [s "too long for max prescaler and "]
+      /set s str [s [eng freq_inst] "Hz clock"]
+      /show "  " s
+         error   PRESC
+         end
+      /stop
+      /endif
+    /endloop                 ;back to try with next prescaler in II
+  /const presc integer = ii  ;save final computed prescaler divide value
+
+  /set ii [rnd [log2 presc]] ;make 0-3 prescaler number
+  /const t3ps integer = ii   ;prescaler field value in T3CON
+  /const ttick real = [/ presc freq_inst] ;timer tick time
+  /const nsmin integer = [rnd [/ [- tsmin terr] ttick]] ;min ticks for short
+  /const nsmax integer = [rnd [/ [+ tsmax terr] ttick]] ;max ticks for short
+  /const nlmin integer = [rnd [/ [- tlmin terr] ttick]] ;min ticks for long
+  /const nlmax integer = [rnd [/ [+ tlmax terr] ttick]] ;max ticks for long
+
+  /set s ""
+  /set s [str s "Prescaler " presc]
+  /set s [str s ", resolution " [eng ttick] "s"]
+  /set s [str s ", short " nsmin "-" nsmax " ticks"]
+  /set s [str s ", long " nlmin "-" nlmax " ticks"]
+  /show "  " s
+  /endblock
+lbankadr equ     bankadr(lbank) ;address within local state register bank
+
+;*******************************************************************************
+;
+;   Global state.  All this state is assumed to be in the GBANK register
+;   bank by other modules.
+;
+         defram  gbankadr
+
+ndccpack res     1           ;number of DCC packet data bytes in in DCCPACK
+dccpack  res     [v maxdcc]  ;complete received and validated DCC packet
+
+         global  ndccpack, dccpack
+
+;*******************************************************************************
+;
+;   Local state.
+;
+;   Variables in access RAM.
+;
+         defram  0
+
+dccflags res     1           ;collection of individual flag bits, use FLG_xxx
+lastcap  res     2           ;timer 2 value of last capture
+newcap   res     2           ;timer 2 value of new capture
+capdiff  res     2           ;timer 2 ticks since previous edge
+shleft   res     1           ;short levels left in preamble
+ndcc     res     1           ;number of complete bytes in DCCRECV buffer
+bmask    res     1           ;mask for next bit within byte of DCCRECV buffer
+icnt     res     1           ;scratch counter used in interrupt code
+         ;
+         ;   Min and max ticks for valid long and short levels.  These are
+         ;   constants, but are put in RAM so that they can be accessed by
+         ;   subtract-with-borrow instructions.  Since we can only skip on
+         ;   GT or LE, the minimum ticks constants are the first invalid value
+         ;   and the maximum ticks constants the last valid value.
+         ;
+nslow    res     2           ;short level too low time
+nsmax    res     2           ;short level max time
+nllow    res     2           ;long level too low time
+nlmax    res     2           ;long level max time
+;
+;   Variables in banked RAM.
+;
+         defram  lbankadr
+
+dccrecv  res     [+ maxdcc 1] ;bits received in DCC packet so far
+;
+;   Symbols for the local 1-bit flags in DCCFLAGS.
+;
+         ;
+         ;   Flags used by the interrupt code.  These local flag bits are in
+         ;   DCCFLAGS, which is a local variable in the access bank.
+         ;
+#define flg_2nd dccflags, 0  ;expecting second half of bit
+#define flg_1bit dccflags, 1 ;the current bit is a 1, not a 0
+#define flg_start dccflags, 2 ;valid 0 bit here is start bit after preamble
+#define flg_inpack dccflags, 3 ;in packet, not waiting for start of packet
+#define flg_dat dccflags, 4  ;value of received data bit
+
+/if debug then
+         global  dccflags, lastcap, newcap, capdiff
+         global  shleft, ndcc, bmask, icnt
+         global  nslow, nsmax, nllow, nlmax
+         global  dccrecv
+  /endif
+
+
+.dcc     code
+;*******************************************************************************
+;
+;   Subroutine DCC_INIT
+;
+;   Initialize the hardware and software state managed by this module.
+;
+         glbsub  dcc_init, noregs
+
+         clrf    dccflags    ;init all local flags to off
+         loadk8  shleft, [v npream] ;init to full preamble left
+
+         loadk16 nslow, [- nsmin 1] ;set constants in memory for min/max ticks
+         loadk16 nsmax, [v nsmax]
+         loadk16 nllow, [- nlmin 1]
+         loadk16 nlmax, [v nlmax]
+;
+;   Set up timer to free run and to be the timer to capture by the CCP module.
+;
+         setreg  b'01000001' | [shiftl t3ps 4], t3con
+                 ; 0-------  timer reads are two separate 8 bit operations
+                 ; -1--0---  timer 3 is the capture source for both CCP modules
+                 ; --XX----  prescaler, from T3PS constant above
+                 ; -----X--  not used when instruction clock is the source
+                 ; ------0-  clock source is the instruction clock
+                 ; -------1  turn on the timer
+;
+;   Set up the CCP2 module to capture the timer on a edge.  The module can only
+;   capture the timer value on either the rising or falling edge.  To measure
+;   the time between each edge, the CCP module capture polarity is toggled each
+;   capture interrupt.  Which way it is set up here therefore doesn't matter.
+;
+         setreg  b'00000100', ccp2con
+                 ; XX------  unused
+                 ; --XX----  not used in capture mode
+                 ; ----0100  configure for capture mode, every falling edge
+
+         dbankif pir2
+         bcf     pir2, ccp2if ;clear any pending interrupt condition
+         dbankif pie2
+         bsf     pie2, ccp2ie ;enable the capture interrupt
+
+         leaverest
+
+////////////////////////////////////////////////////////////////////////////////
+//
+//   Macro COMPARE var1, var2
+//
+//   Compare the value in variable VAR1 to that in VAR2.  Both variables are 16
+//   bit unsigned integers.  After the compare, SKIP_WLE will skip if VAR1 <=
+//   VAR2, and SKIP_GT will skip if VAR1 > VAR2.  VAR1 and VAR2 must be directly
+//   accessible (either in access RAM or the bank set appropriately).
+//
+//   W is trahsed.  VAR1 and VAR2 are not altered.
+//
+/macro compare
+  /var local s
+
+  /set s [str "         movf    " [qstr [arg 1]] "+0, w"]
+  /call startcomm s
+  /set s [str s "compare " [ucase [qstr [arg 1]]] " to " [ucase [qstr [arg 2]]]]
+  /write s
+         subwf   [arg 2]+0, w
+         movf    [arg 1]+1, w
+         subwfb  [arg 2]+1, w
+  /endmac
+
+;*******************************************************************************
+;
+;   CCP2 interrupt handler.  This routine is jumped to from the interrupt
+;   routine when the CCP2IF bit is found set.  This routine must jump to
+;   INTR_RET_CCP2 in the interrupt module when done.
+;
+;   W, STATUS, BSR, FSR0, and FSR1 have been saved and may be trashed.
+;
+         glbent  intr_ccp2   ;interrupt routine jumps here on CCP2IF set
+
+         movff   ccpr2l, newcap+0 ;save the captured value
+         movff   ccpr2h, newcap+1
+;
+;   Flip the polarity of the edge the capture hardware is looking for.  This can
+;   cause a spurious edge dectection, so the interrupt flag is cleared after a
+;   few cycles of other computation is performed.
+;
+         dbankif ccp2con
+         movf    ccp2con, w  ;get the existing CCP2 configuration
+         clrf    ccp2con     ;reset the CCP2 module
+         xorlw   1           ;make the config setting for opposite polarity
+         movwf   ccp2con     ;set the CCP2 module to the new configuration
+;
+;   Compute the time since the previous edge into CAPDIFF, and update LASTCAP.
+;
+         movf    lastcap+0, w ;subtract the low bytes
+         subwf   newcap+0, w
+         movwf   capdiff+0
+         movf    lastcap+1, w ;subtract the high bytes
+         subwfb  newcap+1, w
+         movwf   capdiff+1
+
+         movff   newcap+0, lastcap+0 ;promote new value to the previous value
+         movff   newcap+1, lastcap+1
+
+         dbankif pir2
+         bcf     pir2, ccp2if ;clear the interrupt condition
+;
+;   CAPDIFF contains the number of timer ticks since the previous edge.
+;
+;   Now classify this time as being short, long, or invalid.
+;
+         compare capdiff, nlmax
+         skip_wle
+         jump    len_inv     ;too long for long level
+
+         compare capdiff, nllow
+         skip_wle
+         jump    len_long    ;is long level
+
+         compare capdiff, nsmax
+         skip_wle
+         jump    len_inv     ;too long for short level
+
+         compare capdiff, nslow
+         skip_wgt
+         jump    len_inv     ;too short for short level
+;
+;   This level is a valid short half-bit.
+;
+len_short unbank
+         ;
+         ;   Count one less short level before this is a valid preamble.
+         ;
+         tstfsz  shleft      ;already enough for valid preamble ?
+         decf    shleft      ;no, count one less left now
+         movf    shleft      ;set Z flag if in valid preamble
+         skip_z              ;after minimum preamble ?
+         jump    no_pream    ;no
+         ;
+         ;   Valid preamble.
+         ;
+         bcf     flg_2nd     ;expect start of a new bit next time
+         gjump   intr_ret_ccp2 ;done with this interrupt
+
+no_pream                     ;not after preamble
+         btfsc   flg_2nd     ;expecting start of a new bit ?
+         jump    sh_2nd      ;expecting second half of bit
+         ;
+         ;   Start of a new 1 bit.
+         ;
+         bsf     flg_1bit    ;this is start of a 1 bit, if any
+         bsf     flg_2nd     ;expect second half of bit next time
+         gjump   intr_ret_ccp2 ;done with this interrupt
+         ;
+         ;   We are expecting the second half of a bit.
+         ;
+sh_2nd
+         btfss   flg_1bit    ;in a 1 bit ?
+         jump    prot_inv    ;in a 0 bit, short level is invalid here
+
+         bcf     flg_2nd     ;expect first half of bit next time
+         bsf     flg_dat     ;indicate bit value is 1
+         jump    ev_bit      ;go handle data bit received event
+;
+;   This level is a valid long half-bit.
+;
+len_long unbank
+         btfsc   flg_2nd     ;this is start of a new bit ?
+         jump    long_2nd    ;second half
+         ;
+         ;   Start of new 0 bit.
+         ;
+         bcf     flg_start   ;init to not preceeded by a valid preamble
+         movf    shleft      ;set Z if preamble preceeds here
+         skip_nz
+         bsf     flg_start   ;0 bit here will be a start bit
+         loadk8  shleft, [v npream] ;definitely not in preamble now
+
+         bsf     flg_2nd     ;expect second half of bit next time
+         bcf     flg_1bit    ;in a 0 bit, not a 1 bit
+         gjump   intr_ret_ccp2 ;done with this interrupt
+         ;
+         ;   We are expecting the second half of a bit.
+         ;
+long_2nd
+         bcf     flg_2nd     ;expect first half of bit next time
+         btfsc   flg_1bit    ;in a 0 bit ?
+         jump    prot_inv    ;in a 1 bit, long level is invalid here
+
+         btfsc   flg_start   ;this is not a packet start bit ?
+         jump    ev_start    ;go handle start of packet event
+
+         bcf     flg_dat     ;indicate bit value is 0
+         jump    ev_bit      ;go handle data bit received event
+;
+;   This level is not a valid long or short half-bit.
+;
+len_inv  unbank
+         loadk8  shleft, [v npream] ;reset to full preamble required
+         bcf     flg_2nd     ;expecting first half of bit next
+;
+;   Invalid low level DCC protocol detected.
+;
+prot_inv unbank              ;low level protocol error detected
+ev_abort unbank              ;packet error, abort the current packet
+         bcf     flg_inpack  ;abort any received packet in progress
+         gjump   intr_ret_ccp2 ;done with this interrupt
+;
+;   The preamble and the packet start bit have just been received.
+;
+ev_start unbank              ;start of new packet event
+         loadk8  ndcc, 0     ;reset the received bits buffer to empty
+         loadk8  bmask, h'80' ;init mask for next bit within its byte
+         bsf     flg_inpack  ;indicate now in a packet
+         gjump   intr_ret_ccp2 ;done with this interrupt
+;
+;   A new complete bit was received.
+;
+ev_bit   unbank              ;new bit received event, bit value in FLG_DAT
+         btfss   flg_inpack  ;currently in a packet ?
+         jump    intr_ret    ;no
+
+         movf    bmask       ;set Z if this is a byte end bit
+         bz      ev_endbit   ;is a byte end bit, not data bit ?
+;
+;   The new received bit is a normal data bit.
+;
+         ;
+         ;   Point FSR0 to the byte in the receive buffer containing this bit.
+         ;
+         lfsr    0, dccrecv  ;point to start of receive buffer
+         movf    ndcc, w     ;get number of complete bytes in buffer
+         addwf   fsr0l       ;point to the current receive byte
+         ;
+         ;   Write this bit into the buffer byte.
+         ;
+         comf    bmask, w    ;init this bit to 0
+         andwf   indf0
+         movf    bmask, w    ;get the mask for this bit
+         btfsc   flg_dat     ;bit is 0, nothing more to do ?
+         iorwf   indf0       ;bit is 1, set it in the buffer byte
+         ;
+         ;   Advance the state to the next bit.
+         ;
+         bcf     status, c   ;shift the bit mask to the next lower bit
+         rrcf    bmask
+
+         gjump   intr_ret_ccp2 ;done with this interrupt
+;
+;   The new received bit is a byte end bit.  Normal data bytes are followed by a
+;   0 bit.  The checksum byte is followed by a 1 bit, which ends the packet.
+;
+ev_endbit unbank
+         btfsc   flg_dat     ;normal data byte end bit ?
+         jump    ev_pkend    ;no, end to the whole packet
+         ;
+         ;   This is the 0 bit following a data byte.
+         ;
+         incf    ndcc        ;count one more complete byte received
+         movf    ndcc, w     ;get the number of bytes received so far
+         sublw   [v maxdcc]  ;compare to max data bytes we can handle
+         skip_wle            ;still within range ?
+         jump    ev_abort    ;buffer overflow, discard this packet
+         loadk8  bmask, h'80' ;reset bit mask for first bit in next byte
+
+intr_ret unbank              ;local jump point to return from interrupt
+         gjump   intr_ret_ccp2 ;done with this interrupt
+         ;
+         ;   This is the 1 bit following the checksum byte.  This ends the whole
+         ;   packet.
+         ;
+ev_pkend unbank
+         incf    ndcc        ;update total number of bytes received
+         bcf     flg_inpack  ;indicate no longer receiving a packet
+         ;
+         ;   Discard this packet if the foreground code isn't done with the
+         ;   previous packet yet.  We set the global flag DCCPACK here when a
+         ;   new packet is received and written into the DCCPACK buffer.  The
+         ;   foreground code then clears the DCCPACK flag when done with the
+         ;   packet.  If this flag is still set now, then we have no place to
+         ;   put the new packet.  In that case we discard it as if it never
+         ;   happened.
+         ;
+         skip_nflag dccpack  ;foreground code done with previous packet ?
+         jump    intr_ret    ;no, ignore the new packet
+         ;
+         ;   Check that the packet has at least 2 bytes, which is the minimum
+         ;   valid size.
+         ;
+         movf    ndcc, w     ;get total number of bytes received
+         sublw   1           ;compare to max too small value
+         skip_wgt            ;packet meets minimum size ?
+         jump    intr_ret    ;no, ignore it
+         ;
+         ;   Check the checksum.  The last byte is the checksum byte, and its
+         ;   value is set so that the XOR of all packet bytes is 0.
+         ;
+         movff   ndcc, icnt  ;init number of bytes left to checksum
+         lfsr    0, dccrecv  ;init pointer to the first byte
+         movlw   0           ;init accumulated checksum
+ev_cksum unbank
+         xorwf   postinc0, w ;accumulate this byte into checksum, advance pointer
+         decfsz  icnt        ;count one less byte left to do
+         jump    ev_cksum    ;back to add next byte to the checksum
+
+         tstfsz  wreg
+         bnz     intr_ret    ;checksum is invalid ?
+         ;
+         ;   The received packet is valid.  Copy it into the DCC packet buffer
+         ;   DCCPACK and notify the foreground code of the new packet by setting
+         ;   the DCCPACK global flag.
+         ;
+         decf    ndcc        ;make number of data bytes (not checksum byte)
+         movff   ndcc, ndccpack ;set number of bytes that will be in DCCPACK
+         lfsr    0, dccrecv  ;init get pointer
+         lfsr    1, dccpack  ;init put pointer
+ev_copy  unbank
+         movff   postinc0, postinc1 ;copy this byte from receive buf to packet buf
+         decfsz  ndcc        ;count one less byte left to copy
+         jump    ev_copy     ;back to copy the next byte
+
+         setflag dccpack     ;notify foreground code of the new packet
+         gjump   intr_ret_ccp2 ;done with this interrupt
+
+         end
