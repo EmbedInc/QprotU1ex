@@ -42,6 +42,8 @@ n_iregs  equ     1           ;number of IREGn registers for interrupt use
 ;
 namemaxlen equ   80          ;max allowed char in user-settable name string
 gbankadr equ     0           ;adr within globals bank (access bank on PIC18)
+/const   cmdbufsz integer = 64 ;size of command processor scratch buffer
+
 /const   blip_per real = 10.0 ;blip period, seconds
 /const   blip_on real = 0.250 ;blip on time, seconds
 
@@ -73,6 +75,7 @@ rsp_dcc  equ     7           ;sends one received DCC packet to the host
 ;
 /include "(cog)src/pic/task_setup.ins.aspic"
 /include "u1ex_usb.ins.aspic" ;global definitions required by USB subsystem
+cmdbufsz equ     [v cmdbufsz] ;size of command processor scratch buffer
 
 ;**********
 ;

@@ -1,0 +1,740 @@
+;   ***************************************************************
+;   * Copyright (C) 2015, Embed Inc (http://www.embedinc.com)     *
+;   *                                                             *
+;   * Permission to copy this file is granted as long as this     *
+;   * copyright notice is included in its entirety at the         *
+;   * beginning of the file, whether the file is copied in whole  *
+;   * or in part and regardless of whether other information is   *
+;   * added to the copy.                                          *
+;   *                                                             *
+;   * The contents of this file may be used in any way,           *
+;   * commercial or otherwise.  This file is provided "as is",    *
+;   * and Embed Inc makes no claims of suitability for a          *
+;   * particular purpose nor assumes any liability resulting from *
+;   * its use.                                                    *
+;   ***************************************************************
+;
+;   Command processing routines.
+;
+;   Most routines to process individual commands are in this module.  The
+;   general mechanics of command processing other than implementing individual
+;   commands is in the CMD module.
+;
+;   The interface to all command routines is the same.  The entry point to each
+;   command processing routine is named CM<name>_xxx.  This naming convention is
+;   not be used elsewhere in the system except for command processing routines.
+;
+;   The <name> part of command routine names defaults to the empty string.  This
+;   is typically only used when there are multiple command processors in a
+;   system.  In that case, each is given a different name, which makes the
+;   command routine names unique between command processors.  The name is set by
+;   the NAME configuration constants in each CMD module, and again here in each
+;   CMDS module.
+;
+;   Each command processing routine must follow these rules:
+;
+;     1 - TASK_YIELD must be called in a loop whenever waiting for a external
+;         event.
+;
+;     2 - Sending any data to the response stream must be preceeded by a call
+;         to CMD_LOCK_OUT.
+;
+;     3 - CMD_UNLOCK_OUT may only be called between whole responses.  It is not
+;         necessary to call CMD_UNLOCK_OUT for the last response.
+;
+;     4 - When done, execution must end up at CMD_DONE (actually
+;         CMD<name>_DONE).  This can be done by explicitly jumping there.  It
+;         can also be done by executing a RETURN from the top nesting level.
+;         The CMD_DONE return address is seeded onto the stack for this purpose
+;         before the command processing routine is run.  In other words, the
+;         command processing routine may act as a subroutine.
+;
+;         The call and data stacks will be reset to empty by CMD_DONE, so it is
+;         permissible to jump to CMD_DONE from a nested subroutine or with data
+;         left on the data stack.  It is also permissible to call CMD_DONE, as
+;         may be necessary from a higher level language that has no ability to
+;         jump to a external address.
+;
+;         CMD_DONE will also release any output stream lock, so this need not be
+;         explicitly done by a command routine if sending a response is the last
+;         thing it does.
+;
+;   Several subroutines and other resources are available to command routines:
+;
+;     CMD<name>_GET8
+;
+;       Gets the next command stream byte into W0.
+;
+;     CMD<name>_GET16
+;
+;       Gets the next two command stream bytes as a 16 bit integer and returns
+;       it in REG1:REG0.  The bytes are assumed to be in most to least
+;       significant order.
+;
+;     CMD<name>_GET24
+;
+;       Gets the next three command stream bytes as a 24 bit integer and returns
+;       it in REG2:REG1:REG0.  The bytes are assumed to be in most to least
+;       significant order.
+;
+;     CMD<name>_GET32
+;
+;       Gets the next four command stream bytes as a 32 bit integer and returns
+;       it in REG3:REG2:REG1:REG0.  The bytes are assumed to be in most to least
+;       significant order.
+;
+;     CMD<name>_PUT8
+;
+;       Sends the byte in REG0 out the response stream.  The response stream
+;      lock must be held when this routine is called.
+;
+;     CMD<name>_PUT16
+;
+;       Sends the 16 bits in REG1:REG0 out the response stream.  The bytes are
+;       sent in most to least significant order.  The response stream lock must
+;       be held when this routine is called.
+;
+;     CMD<name>_PUT24
+;
+;       Sends the 24 bits in REG2:REG1:REG0 out the response stream.  The bytes
+;       are sent in most to least significant order.  The response stream lock
+;       must be held when this routine is called.
+;
+;     CMD<name>_PUT32
+;
+;       Sends the 32 bits in REG3:REG2:REG1:REG0 out the response stream.  The
+;       bytes are sent in most to least significant order.  The response stream
+;       lock must be held when this routine is called.
+;
+;     CMD<name>_LOCK_OUT
+;
+;       Acquires the exclusive lock on the response stream.  Whole responses
+;       must be sent with this lock held to prevent them being interleaved with
+;       response data sent by other parts of the system asynchronously.
+;
+;     CMD<name>_UNLOCK_OUT
+;
+;       Releases the lock on the response stream, if held by this task.  This
+;       may be called after sending a complete response to let other parts of
+;       the system send response data.  Any output stream lock held by this task
+;       is automatically released by CMD_DONE, so it is not necessary to call
+;       CMD_UNLOCK_OUT at the end of a command routine.
+;
+;       If a command routine sends multiple responses, it is permissible to
+;       hold the output lock continuously for all of them as long as the command
+;       routine does not wait on a external event.  Note that simply releasing
+;       the lock then acquiring it again without a call to TASK_YIELD in between
+;       is just a waste of cycles since no other task has the opportunity to
+;       acquire the lock while it is available.
+;
+;     PUT8, PUT16, PUT24, PUT32
+;     GET8, GET16, GET24, GET32
+;     LOCKOUT, UNLOCKOUT
+;
+;       Convenience wrapper macros that use the NAME constant generate the full
+;       names of the routines above, then call them.
+;
+;     PUTK8 val
+;
+;       Sends the byte value VAL out the response stream.  REG0 is trashed.  VAL
+;       must be a constant resolvable by MPASM.
+;
+;     COMMAND cmdname
+;
+;       Convenience wrapper for starting a command routine.  The global entry
+;       point CM<name>_<cmdname> will be created and the bank set to unknown.
+;
+/include "u1ex.ins.aspic"
+
+         extern  cmdbuf      ;command processor scratch buffer
+
+         extern_flags        ;declare global flag bits EXTERN
+
+;*******************************************************************************
+;
+;   Configuration constants.
+;
+/const   name    string = "" ;unique name for this command processor
+lbank    equ     1           ;register bank for the local state of this module
+;
+;   Derived constants.
+;
+lbankadr equ     bankadr(lbank) ;address within local state register bank
+
+;*******************************************************************************
+;
+;   Global state.  All this state is assumed to be in the GBANK register
+;   bank by other modules.
+;
+         defram  gbankadr
+
+
+;*******************************************************************************
+;
+;   Local state.
+;
+         defram  lbankadr
+
+
+.cmds[chars name] code
+;*******************************************************************************
+;
+;   Subroutine CMDS_INIT
+;
+;   Initialize the hardware and software state managed by this module.
+;
+cmds[chars name]_init glbsub
+
+         leaverest
+
+////////////////////////////////////////////////////////////////////////////////
+//
+//   Convenience wrapper macros for generating the full CMD<name>_xxx routine
+//   name, then calling it.
+//
+/macro put8
+         gcall   cmd[chars name]_put8
+  /endmac
+
+/macro put16
+         gcall   cmd[chars name]_put16
+  /endmac
+
+/macro put24
+         gcall   cmd[chars name]_put24
+  /endmac
+
+/macro put32
+         gcall   cmd[chars name]_put32
+  /endmac
+
+/macro get8
+         gcall   cmd[chars name]_get8
+  /endmac
+
+/macro get16
+         gcall   cmd[chars name]_get16
+  /endmac
+
+/macro get24
+         gcall   cmd[chars name]_get24
+  /endmac
+
+/macro get32
+         gcall   cmd[chars name]_get32
+  /endmac
+
+/macro lockout
+         gcall   cmd[chars name]_lock_out
+  /endmac
+
+/macro unlockout
+         gcall   cmd[chars name]_unlock_out
+  /endmac
+
+////////////////////////////////////////////////////////////////////////////////
+//
+//   Macro PUTK8 val
+//
+//   Sends the byte value VAL out the response stream.  REG0 is trashed.  VAL
+//   must be a constant resolvable by MPASM.
+//
+/macro putk8
+         loadk8  reg0, [arg 1]
+         put8
+  /endmac
+
+////////////////////////////////////////////////////////////////////////////////
+//
+//   Macro COMMAND cmdname
+//
+//   Creates the entry point of a command routine and initializes build-time
+//   state appropriately.
+//
+//   CMDNAME is the bare name of the command.  The full command routine entry
+//   point will be CM<name>_<cmdname>.
+//
+/macro command
+         glbent  cm[chars name]_[arg 1]
+  /endmac
+
+;*******************************************************************************
+;
+;   Command FWVER
+;
+;   Returns the 1-255 firmware version and sequence numbers.
+;
+         command fwver
+
+         lockout
+         putk8   rsp_fwver   ;FWVER response opcode
+         putk8   fwver       ;1-255 firmware version number
+         putk8   fwseq       ;1-255 firmware sequence number
+
+         return
+
+;*******************************************************************************
+;
+;   Command NAMESET n chars
+;
+;   Set the user-settable name of this unit in non-volatile memory.
+;
+         command nameset
+
+         get8                ;get number of characters+1 into REG2
+         incf    reg0, w
+         movwf   reg2
+
+         gcall   name_set_start ;init for writing user-settable name
+         dbankif gbankadr
+         bsf     flag_namescmd ;command processor has NAME_SET_xxx locked
+
+nameset_loop unbank          ;back here each new name character
+         dcfsnz  reg2        ;count one less character left to do
+         jump    nameset_done ;done all the characters
+         get8                ;get this name character into REG0
+         gcall   name_set_char ;add it to end of name string
+         jump    nameset_loop ;back to do next char
+
+nameset_done unbank          ;done with all the name characters
+         gcall   name_set_end ;close writing the name
+         dbankif gbankadr
+         bcf     flag_namescmd ;indicate not holding NAME_SET lock
+         return
+
+;*******************************************************************************
+;
+;   Command NAMEGET
+;
+;   Sends NAME response to indicate the user-settable unit name.
+;
+         command nameget
+
+         lockout
+         putk8   rsp_name    ;send NAME response opcode
+
+         gcall   name_get_start ;init for reading the user-settable name
+         dbankif gbankadr
+         bsf     flag_namegcmd ;indicate we have NAME_GET lock
+         incf    reg0, w     ;init number of chars+1 loop counter in REG2
+         movwf   reg2
+         put8                ;send the string length byte
+
+nameget_loop unbank          ;back here each new name character
+         dcfsnz  reg2        ;count one less character left to do
+         jump    nameget_done ;done all the characters
+         gcall   name_get_char ;get this name character into REG0
+         put8                ;send it
+         jump    nameget_loop ;back to do next name character
+
+nameget_done unbank          ;done with all the name characters
+         gcall   name_get_end ;done getting the name string
+         dbankif gbankadr
+         bcf     flag_namegcmd ;indicate not holding NAME_GET lock
+         return
+
+;*******************************************************************************
+;
+;   Command SETB val
+;
+;   Drive port B with the 8 bit value VAL.
+;
+         command setb
+
+         get8                ;get VAL into REG0
+         movff   reg0, latb  ;write the value to port B
+         return
+
+;*******************************************************************************
+;
+;   Command SPI1 nbits dat32
+;
+         command spi1
+
+         get8                ;get the number of data bits
+         movff   reg0, reg4  ;save it
+         movff   reg0, reg6
+         get32               ;get the 32 bit data word into REG3:REG2:REG1:REG0
+
+         movf    reg4, w     ;get the number of data bits
+         sublw   32          ;make number of of unused bits in 32 bit word
+         skip_wle            ;number of data bits is within range ?
+         return              ;no, ignore the command
+
+         movwf   reg5        ;init number of bits left to shift data word
+spi1_shft unbank             ;back here to shift data word each new bit
+         movf    reg5
+         bz      spi1_dshft  ;done shifting first bit into MSB ?
+         bcf     status, c   ;shift the word left one bit
+         rlcf    reg0
+         rlcf    reg1
+         rlcf    reg2
+         rlcf    reg3
+         decf    reg5        ;count one less bit left to do
+         jump    spi1_shft   ;back to shift next bit left
+spi1_dshft unbank            ;done shifting input data to start in the MSB
+;
+;   Start the SPI sequence.
+;
+         set_spiclk_off      ;init the clock line low
+         nop
+         nop
+         nop
+         set_ss1_on          ;assert slave select
+;
+;   Transfer each bit.  The outgoing data has been normalized into the high bits
+;   of REG3-REG0.  As these are shifted out the MSB, the received bits are
+;   shifted into the LSB.  The unused low bits of REG3-REG0 are guaranteed to be
+;   0 currently.  REG4 and REG6 contain the number of bits to transfer, which is
+;   guaranteed to be in the range of 0 to 32.  REG6 must be preserved by this
+;   section.
+;
+spi1_bit unbank              ;back here to transfer each new bit both ways
+         movf    reg4
+         bz      spi1_dbit   ;done transferring all bits ?
+
+         btfss   reg3, 7
+         set_spiout_off      ;output is 0 this bit
+         btfsc   reg3, 7
+         set_spiout_on       ;output is 1 this bit
+
+         rlcf    reg0        ;shift out old bit, make room for new received bit
+         rlcf    reg1
+         rlcf    reg2
+         rlcf    reg3
+
+         set_spiclk_on       ;raise clock, data gets transferred on this edge
+         bcf     reg0, 0     ;init received bit to 0
+         btfsc   spiin_reg, spiin_bit ;input bit really is 0 ?
+         bsf     reg0, 0     ;no, set it to 1
+         decf    reg4        ;count one less bit left to transfer
+         nop
+         nop
+         nop
+         set_spiclk_off      ;end this clock pulse
+         jump    spi1_bit    ;back to do next bit
+
+spi1_dbit unbank             ;done transferring all the data bits
+         nop
+         nop
+         nop
+         set_ss1_off         ;de-assert slave select
+         set_spiout_off      ;lower the data line, doesn't matter, for debugging
+;
+;   The SPI frame has been completed and the received data is in the low bits of
+;   REG3-REG0 with the upper unused bits set to 0.  The number of data bits is
+;   in REG6.
+;
+         movff   reg0, reg4  ;save low byte of data word
+
+         lockout             ;get exclusive access to the response stream
+         putk8   rsp_spi1    ;send response opcode
+         movff   reg6, reg0  ;send the number of data bits
+         put8
+         movff   reg4, reg0  ;send the 32 bit data word
+         put8
+         movff   reg1, reg0
+         put8
+         movff   reg2, reg0
+         put8
+         movff   reg3, reg0
+         put8
+         return
+
+;*******************************************************************************
+;
+;   Command SPI2 nbits dat32
+;
+         command spi2
+
+         get8                ;get the number of data bits
+         movff   reg0, reg4  ;save it
+         movff   reg0, reg6
+         get32               ;get the 32 bit data word into REG3:REG2:REG1:REG0
+
+         movf    reg4, w     ;get the number of data bits
+         sublw   32          ;make number of of unused bits in 32 bit word
+         skip_wle            ;number of data bits is within range ?
+         return              ;no, ignore the command
+
+         movwf   reg5        ;init number of bits left to shift data word
+spi2_shft unbank             ;back here to shift data word each new bit
+         movf    reg5
+         bz      spi2_dshft  ;done shifting first bit into MSB ?
+         bcf     status, c   ;shift the word left one bit
+         rlcf    reg0
+         rlcf    reg1
+         rlcf    reg2
+         rlcf    reg3
+         decf    reg5        ;count one less bit left to do
+         jump    spi2_shft   ;back to shift next bit left
+spi2_dshft unbank            ;done shifting input data to start in the MSB
+;
+;   Start the SPI sequence.
+;
+         set_spiclk_off      ;init the clock line low
+         nop
+         nop
+         nop
+         set_ss2_on          ;assert slave select
+;
+;   Transfer each bit.  The outgoing data has been normalized into the high bits
+;   of REG3-REG0.  As these are shifted out the MSB, the received bits are
+;   shifted into the LSB.  The unused low bits of REG3-REG0 are guaranteed to be
+;   0 currently.  REG4 and REG6 contain the number of bits to transfer, which is
+;   guaranteed to be in the range of 0 to 32.  REG6 must be preserved by this
+;   section.
+;
+spi2_bit unbank              ;back here to transfer each new bit both ways
+         movf    reg4
+         bz      spi2_dbit   ;done transferring all bits ?
+
+         btfss   reg3, 7
+         set_spiout_off      ;output is 0 this bit
+         btfsc   reg3, 7
+         set_spiout_on       ;output is 1 this bit
+
+         rlcf    reg0        ;shift out old bit, make room for new received bit
+         rlcf    reg1
+         rlcf    reg2
+         rlcf    reg3
+
+         set_spiclk_on       ;raise clock, data gets transferred on this edge
+         bcf     reg0, 0     ;init received bit to 0
+         btfsc   spiin_reg, spiin_bit ;input bit really is 0 ?
+         bsf     reg0, 0     ;no, set it to 1
+         decf    reg4        ;count one less bit left to transfer
+         nop
+         nop
+         nop
+         set_spiclk_off      ;end this clock pulse
+         jump    spi2_bit    ;back to do next bit
+
+spi2_dbit unbank             ;done transferring all the data bits
+         nop
+         nop
+         nop
+         set_ss2_off         ;de-assert slave select
+         set_spiout_off      ;lower the data line, doesn't matter, for debugging
+;
+;   The SPI frame has been completed and the received data is in the low bits of
+;   REG3-REG0 with the upper unused bits set to 0.  The number of data bits is
+;   in REG6.
+;
+         movff   reg0, reg4  ;save low byte of data word
+
+         lockout             ;lock exclusive access to the response stream
+         putk8   rsp_spi2    ;send response opcode
+         movff   reg6, reg0  ;send the number of data bits
+         put8
+         movff   reg4, reg0  ;send the 32 bit data word
+         put8
+         movff   reg1, reg0
+         put8
+         movff   reg2, reg0
+         put8
+         movff   reg3, reg0
+         put8
+         return
+
+;*******************************************************************************
+;
+;   Command IICW adr ndat dat ... dat
+;
+;   Send IIC write message.
+;
+         command iicw
+
+         get8                ;get the IIC slave address into REG3
+         movff   reg0, reg3
+         get8                ;get the number of data bytes into REG1
+         movff   reg0, reg1
+         gcall   getbuf      ;read the data bytes into BUF, N into REG2
+
+         gcall   iic_on      ;make sure set up for using the IIC bus
+         clrf    reg4        ;init number of data bytes actually sent
+
+         movff   reg3, reg0  ;pass the IIC slave address
+         gcall   iic_start_put ;start the IIC bus write sequence
+         dbankif gbankadr
+         btfss   flag_iicack ;got the ACK ?
+         jump    iicw_dsend  ;no, abort
+
+         lfsr    0, cmdbuf   ;init buffer read pointer
+iicw_loop unbank             ;back here to send each new byte
+         movf    reg2
+         bz      iicw_dsend  ;done sending all the bytes ?
+         decf    reg2        ;update bytes left to send for next time
+         movff   postinc0, reg0 ;fetch this byte from the buffer
+         pushreg fsr0l
+         pushreg fsr0h
+         gcall   iic_put     ;send the byte
+         popreg  fsr0h
+         popreg  fsr0l
+         incf    reg4        ;count one more byte sent
+         dbankif gbankadr
+         btfsc   flag_iicack ;not NACK ?
+         jump    iicw_loop   ;got ACK, back to do next byte
+;
+;   Done sending bytes.  REG4 contains the number of bytes actually sent, and
+;   FLAG_IICACK indicates whether the last byte was ACKed or not.
+;
+iicw_dsend unbank
+         gcall   iic_stop    ;end the IIC bus message
+
+         lockout             ;lock exclusive access to the response stream
+         putk8   rsp_iicw    ;send the response opcode
+
+         clrf    reg0        ;init STAT byte to all fields 0
+         dbankif gbankadr
+         btfsc   flag_iicack ;didn't get ACK from last byte ?
+         bsf     reg0, 0     ;did get ACK
+         put8                ;send the STAT byte
+
+         movff   reg4, reg0
+         put8                ;send the number of bytes actually sent
+         return
+
+;*******************************************************************************
+;
+;   Command IICR adr ndat
+;
+;   Cause a read message on the IIC bus and send a IICR response with the
+;   received data bytes.  ADR is the IIC slave address, and NDAT is the number
+;   of data bytes to read from the slave.  The last data byte will be NACKed,
+;   then the IIC sequence ended with a stop condition.
+;
+         command iicr
+
+         get8                ;get the IIC slave address into REG1
+         movff   reg0, reg1
+         get8                ;get the number of bytes
+         movf    reg0, w
+         sublw   cmdbufsz    ;compare to buffer size
+         movf    reg0, w
+         skip_wle            ;within size the buffer can handle ?
+         movlw   cmdbufsz    ;no, set to maximum we can handle
+         movwf   reg2        ;save final clipped number of bytes in REG2
+
+         gcall   iic_on      ;make sure IIC bus is enabled
+         movff   reg1, reg0  ;pass the address
+         gcall   iic_start_get ;start the IIC read sequence
+         clrf    reg4        ;init IICR response status bits to all 0
+         btfss   flag_iicack ;slave responded to the address byte ?
+         jump    iicr_diic   ;no, abort the sequence now
+         bsf     reg4, 0     ;set STAT bit to indicate ACK received
+;
+;   Read the data bytes into the buffer.  Register usage:
+;
+;     REG0  -  Data byte.
+;
+;     REG1  -  Slave address.
+;
+;     REG2  -  Number of data bytes to read.  This has already been clipped to
+;              the buffer size.
+;
+;     REG3  -  Number of data bytes left to do.
+;
+;     REG4  -  IICR response status byte so far.
+;
+         movf    reg2, w     ;get the number of data bytes to read
+         bz      iicr_diic   ;no data bytes to get, skip this section ?
+         movwf   reg3        ;init number of data bytes left to read
+         lfsr    0, cmdbuf   ;init address where to save next byte
+
+iicr_get unbank              ;back here to get each new data byte
+         pushreg fsr0l
+         pushreg fsr0h
+         gcall   iic_get     ;get this data byte into REG0
+         popreg  fsr0h
+         popreg  fsr0l
+         movff   reg0, postinc0 ;stuff the data byte into the buffer
+         decf    reg3        ;count one less data byte left to read
+         bz      iicr_dget   ;just did last data byte ?
+         gcall   iic_ack     ;ACK this byte
+         jump    iicr_get    ;back to read the next byte
+iicr_dget unbank             ;end getting data bytes
+         gcall   iic_nack    ;NACK the last data byte
+
+iicr_diic unbank             ;done with IIC sequence
+         gcall   iic_stop    ;send IIC bus stop sequence
+;
+;   Send the IICR response to the host.  Register usage:
+;
+;     REG0  -  Data byte.
+;
+;     REG1  -  Slave address.
+;
+;     REG2  -  Number of data bytes to read.  This has already been clipped to
+;              the buffer size.
+;
+;     REG4  -  IICR response status byte so far.
+;
+         lockout             ;lock exclusive access to the response stream
+         putk8   rsp_iicr    ;send the response opcode
+         movff   reg4, reg0
+         put8                ;send the STAT byte
+         movff   reg2, reg0
+         put8                ;send the number of data bytes to follow
+
+         lfsr    0, cmdbuf   ;init pointer to first data byte in the buffer
+iicr_send unbank             ;back here to send each new data byte
+         movf    reg2
+         bz      iicr_dsend  ;done sending all the data bytes ?
+         movff   postinc0, reg0 ;get this data byte from the buffer
+         pushreg fsr0l
+         pushreg fsr0h
+         put8                ;send it to the host
+         popreg  fsr0h
+         popreg  fsr0l
+         decf    reg2        ;count one less byte left to do
+         jump    iicr_send   ;back to do next byte
+iicr_dsend unbank
+
+         return
+
+;*******************************************************************************
+;
+;   Command PHINC inc24
+;
+;   Set the automatic phase outputs angle increment per millisecond.  A full
+;   circle is represented by 2^14, which is 16,777,216.  To guarantee 3 distinct
+;   phase outputs, the increment should not exceed 1/6 of a circle, or
+;   2,796,202, which results in 166.67 Hz output frequency.
+;
+;   A INC24 value of 0 disables the automatic phase outputs and does not change
+;   the state of the phase lines each 1 ms interrupt.
+;
+/if enab_phase then
+         extern  phinc       ;24 bit phase angle increment every 1 ms
+
+         command phinc
+
+         get8                ;get the phase increment into REG0:REG1:REG2
+         movff   reg0, reg2
+         get8
+         movff   reg0, reg1
+         get8
+
+         movf    reg0, w     ;save overall zero indication in REG3
+         iorwf   reg1, w
+         iorwf   reg2, w
+         movwf   reg3
+
+         dbankif gbankadr
+         movf    reg2, w
+         movf    reg3        ;set Z iff phase outputs disabled
+         intr_off            ;temp disable interrupts
+         movwf   phinc+0
+         movff   reg1, phinc+1
+         movff   reg0, phinc+2
+         bz      phinc_dintr ;phase inc zero, nothing more to do ?
+         movlw   b'11111000' ;make sure phase lines configured as outputs
+         andwf   trisb
+phinc_dintr
+         intr_on             ;re-enable interrupts
+
+         return
+  /endif
+
+         end

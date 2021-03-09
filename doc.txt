@@ -1,5 +1,5 @@
                          Embed Inc U1EX Firmware
-                              2 July 2020
+                              9 March 2021
 
 The purpose of the U1EX firmware is to provide a example of using the
 Embed Inc USB drivers for the USB peripheral of a Microchip PIC 18F2550
@@ -376,3 +376,9 @@ Firmware versions
     BLIP feature causes a positive-going pulse on RB2.  The period and
     pulse duration are set with constants in the main include file.
     Resolution is 1 ms, and maximum duration is 65.535 seconds.
+
+  U1EX 17
+
+    Updated to lastest library CMD module.  This allows commands to
+    implemented in any module, not just in CMD.  Moved existing command
+    routines to new CMDS module.

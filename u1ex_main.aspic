@@ -170,7 +170,7 @@ d_dccpack unbank
          jump    n_dcclock   ;no
          bcf     ev_dcclock  ;clear the event condition
          bsf     ev_dccopc   ;set event to send DCC response opcode
-         gcall   cmd_lock    ;acquire the lock
+         gcall   cmd_lock_out ;acquire the lock
          jump    loop_main   ;done handling this event
 
 n_dcclock unbank
@@ -248,7 +248,7 @@ n_dccn   unbank
          clrflag dccpack     ;indicate done with the received DCC packet
          clrf    reg1        ;flush the USB output buffer
          gcall   usb_flush1
-         gcall   cmd_unlock  ;release lock on the response stream
+         gcall   cmd_unlock_out ;release lock on the response stream
 
 d_dccbyte unbank
          jump    loop_main
