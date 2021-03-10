@@ -1,0 +1,232 @@
+;   ***************************************************************
+;   * Copyright (C) 2010, Embed Inc (http://www.embedinc.com)     *
+;   *                                                             *
+;   * Permission to copy this file is granted as long as this     *
+;   * copyright notice is included in its entirety at the         *
+;   * beginning of the file, whether the file is copied in whole  *
+;   * or in part and regardless of whether other information is   *
+;   * added to the copy.                                          *
+;   *                                                             *
+;   * The contents of this file may be used in any way,           *
+;   * commercial or otherwise.  This file is provided "as is",    *
+;   * and Embed Inc makes no claims of suitability for a          *
+;   * particular purpose nor assumes any liability resulting from *
+;   * its use.                                                    *
+;   ***************************************************************
+;
+;   Test FIFO.
+;
+;   The purpose of this module is to provide commands and responses for testing
+;   the "new" (2021) FIFO facilities.
+;
+/const   fifos_new bool = true ;use the "new" (2021) FIFO macros
+/include "u1ex.ins.aspic"
+
+;*******************************************************************************
+;
+;   Configuration constants.
+;
+/const   fifosz  integer = 5 ;max number of data bytes the FIFO can hold
+/const   fifoadr integer = -1 ;FIFO start address, -1 lets linker place
+/const   thempt  integer = 3 ;empty when this many or less bytes in FIFO
+/const   thfull  integer = 2 ;full when this many or less empty slots in FIFO
+
+lbank    equ     0           ;register bank for the local state of this module
+;
+;   Derived constants.
+;
+/block
+  /var local ii integer
+  /var local r real
+  /var local s string
+
+  /const sml bool = [<= fifosz 255] ;small, 1 byte indexes are used
+  /const big bool = [not sml] ;big, 2 byte indexes are used
+  /const nby integer = [if sml 1 2] ;number of bytes in indexes and thresholds
+  /endblock
+
+lbankadr equ     bankadr(lbank) ;address within local state register bank
+
+;*******************************************************************************
+;
+;   Global state.  All this state is assumed to be in the GBANK register
+;   bank by other modules.
+;
+         defram  gbankadr
+
+
+;*******************************************************************************
+;
+;   Local state.
+;
+         defram  lbankadr
+
+.fiftdat udata
+fift     fifo_define [v fifosz] ;define the FIFO data structures
+
+
+.fift    code
+;*******************************************************************************
+;
+;   Subroutine FIFT_INIT
+;
+;   Initialize the hardware and software state managed by this module.
+;
+fift_init glbsub
+
+         banksel fift
+         fifo_init fift
+
+         leaverest
+
+////////////////////////////////////////////////////////////////////////////////
+//
+//   Macro SENDAT name [ofs]
+//
+//   Send the data at NAME+OFS.  The data is assumed to be either 1 or two
+//   bytes, matching the FIFO index sizes.
+//
+//   REG0 is trashed.
+//
+/macro sendat
+  /var local name string = [qstr [arg 1]]
+  /var local ofs integer     ;offset from NAME for first byte
+
+  /if [exist 2 arg]
+    /then                    ;OFS was supplied
+      /set ofs [arg 2]
+    /else                    ;no OFS parameter
+      /set ofs 0
+    /endif
+
+  /if sml
+    /then                    ;data is 1 byte
+         movff   [chars name]+[v ofs], reg0
+         gcall   cmd_put8
+    /else                    ;data is 2 bytes
+         movff   [chars name]+[+ ofs 1], reg0
+         gcall   cmd_put8
+         movff   [chars name]+[+ ofs 0], reg0
+         gcall   cmd_put8
+    /endif
+  /endmac
+
+;*******************************************************************************
+;
+;   Subroutine FIFT_SEND_FIFO
+;
+;   Send the FIFO response for the current state of the FIFO.
+;
+fift_send_fifo glbsub regf0 | regf1 | regf2
+
+         gcall   cmd_lock_out ;acquire exclusive lock on response stream to host
+
+         loadk8  reg0, rsp_fifo
+         gcall   cmd_put8    ;send FIFO response opcode
+
+         loadk8  reg0, [shiftr fifosz 8] ;init FLAGS byte with FIFO size high bits
+
+         bsf     reg0, 7     ;init to empty
+         banksel fift
+         fifo_br_empty fift, thempt, snd_empt, reg2 ;to SND_EMPT if empty
+         bcf     reg0, 7     ;indicate not empty
+snd_empt
+
+         bsf     reg0, 6     ;init to full
+         banksel fift
+         fifo_br_full fift, thfull, snd_full, reg2 ;to SND_FULL if full
+         bcf     reg0, 6     ;indicate not full
+snd_full
+
+         gcall   cmd_put8    ;send the FLAGS byte
+
+         loadk8  reg0, [and fifosz 16#FF] ;send low byte of FIFO size
+         gcall   cmd_put8
+
+         loadk16 reg1, [v thempt] ;send THEMPT
+         sendat  reg1
+
+         loadk16 reg1, [v thfull] ;send THFULL
+         sendat  reg1
+
+         sendat  fift, 0     ;send PUT index
+         sendat  fift, [if sml 1 2] ;send GET index
+
+         banksel fift
+         fifo_n_empty fift, reg1 ;send number of empty slots
+         sendat  reg1
+
+         banksel fift
+         fifo_n_full fift, reg1 ;send number of bytes in the FIFO
+         sendat  reg1
+
+         gcall   cmd_unlock_out ;release lock on response stream
+         leaverest
+
+;*******************************************************************************
+;
+;   Command FIFOWR dat n
+;
+;   Write N+1 data bytes to the FIFO.  Each data byte will have the value DAT.
+;   Attempts to write to a full FIFO are ignored.
+;
+         glbent  cm_fifowr
+
+         gcall   cmd_get8    ;get the data byte into REG1
+         movff   reg0, reg1
+
+         gcall   cmd_get8    ;get the number of bytes to write into REG2
+         incf    reg0, w
+         movwf   reg2
+;
+;   Register contents:
+;
+;     REG0  -
+;
+;     REG1  -  Data byte
+;
+;     REG2  -  Number of times to write the data byte to the FIFO, except that 0
+;       means to write 256 data bytes.
+;
+fwr_byte unbank              ;back here each new byte to write
+         banksel fift
+         fifo_br_full fift, 0, fwr_dbyte, reg3
+         fifo_put fift, reg1 ;write this byte to the FIFO
+         decfsz  reg2        ;count one less byte left to write
+         jump    fwr_byte    ;back to write the next byte
+
+fwr_dbyte unbank             ;done writing all bytes to the FIFO
+         jump    fift_send_fifo ;send FIFO status, return from command
+
+;*******************************************************************************
+;
+;   Command FIFORD N
+;
+;   Read N+1 bytes from the FIFO.  Attempts to read from an empty FIFO are
+;   ignored.  A FIFORD response is sent for each byte actually read.
+;
+         glbent  cm_fiford
+
+         gcall   cmd_get8    ;get the number of bytes to read into REG1
+         incf    reg0, w
+         movwf   reg1
+
+frd_byte unbank              ;back here each new byte to read
+         banksel fift
+         fifo_br_empty fift, 0, frd_dbyte, reg2 ;go to FRD_DBYTE if FIFO empty
+
+         gcall   cmd_lock_out ;acquire lock on response stream
+         loadk8  reg0, rsp_fiford
+         gcall   cmd_put8    ;send FIFORD opcode
+         banksel fift
+         fifo_get fift, reg0 ;get this data byte from the FIFO
+         gcall   cmd_put8    ;send it
+         gcall   cmd_unlock_out ;release lock on response stream
+
+         decfsz  reg1        ;count one less byte left to do
+         jump    frd_byte    ;back to do the next byte
+
+frd_dbyte unbank             ;done reading from the FIFO
+         jump    fift_send_fifo ;send FIFO status, return from command
+
+         end

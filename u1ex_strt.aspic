@@ -246,6 +246,7 @@ start    unbank
          gcallnr usb_init    ;init USB handler
          gcallnr usb0_init   ;init USB endpoint 0 request processing
          gcallnr dcc_init    ;init DCC decoder
+         gcallnr fift_init   ;init the test FIFO
 
          gcallnr intr_init   ;init interrupt management and enable interrupts
 ;

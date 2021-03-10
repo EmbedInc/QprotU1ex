@@ -477,10 +477,12 @@ cmd_next unbank
          cmd_entry 11, cm_spi2 ;send SPI frame to slave 2
          cmd_entry 12, cm_iicw ;send IIC write message
          cmd_entry 13, cm_iicr ;cause IIC read sequence and return data bytes
-
 /if enab_phase then
          cmd_entry 14, cm_phinc ;set phase outputs increment per ms
   /endif
+         cmd_entry 15, fift_send_fifo ;get FIFO status
+         cmd_entry 16, cm_fifowr ;write to the FIFO
+         cmd_entry 17, cm_fiford ;read from the FIFO
 
          dsp_end cmd_table   ;end of command opcodes dispatch table
 

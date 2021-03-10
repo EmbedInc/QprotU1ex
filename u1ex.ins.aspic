@@ -70,6 +70,8 @@ rsp_spi2 equ     4           ;sends received data from SPI2 command
 rsp_iicw equ     5           ;reports on IIC write message
 rsp_iicr equ     6           ;returns data read from IIC message
 rsp_dcc  equ     7           ;sends one received DCC packet to the host
+rsp_fifo equ     8           ;FIFO status
+rsp_fiford equ   9           ;one byte read from FIFO
 ;
 ;   Derived constants.
 ;

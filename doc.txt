@@ -1,5 +1,5 @@
                          Embed Inc U1EX Firmware
-                              9 March 2021
+                              10 March 2021
 
 The purpose of the U1EX firmware is to provide a example of using the
 Embed Inc USB drivers for the USB peripheral of a Microchip PIC 18F2550
@@ -31,7 +31,7 @@ USB Protocol
 
   In the command and response descriptions below, each data item is a
   unsigned 8 bit byte unless otherwise specified.  Multi-byte values are
-  transferred in least to most significant byte order unless otherwise
+  transferred in most to least significant byte order unless otherwise
   specified.
 
   All command and response opcodes not listed below are reserved, and may
@@ -157,6 +157,21 @@ Commands
     value dedicates RB0-RB2 to the phase outputs until this is explicitly
     changed.
 
+  FIFO: 15
+
+    Get status of the FIFO.  A FIFO response is sent.
+
+  FIFOWR: 16 dat n
+
+    Write the data byte DAT to the FIFO N+1 times.  Attempts to write to a
+    full FIFO are ignored.  A FIFO response is sent after all writes are
+    completed.
+
+  FIFORD: 17 n
+
+    Read N+1 bytes from the FIFO.  Attempts to read from an empty FIFO are
+    ignored.  A FIFORD response is sent for each byte that is actually
+    read.  A FIFO response is sent after all reads are completed.
 
 Responses
 
@@ -241,6 +256,45 @@ Responses
     "error" (checksum) byte.  Exactly N data bytes follow N.  N is
     guaranteed to be at least 1.  This response is only sent if the error
     byte was valid.
+
+  FIFO: 8 flags sizel thempt thfull put get nempt nfull
+
+    Indicates the current state of the FIFO.
+
+    FLAGS contains multiple fields:
+
+          7       6       5       4       3       2       1       0
+      -----------------------------------------------------------------
+      |       |       |       |       |                               |
+      | EMPT  | FULL  |       |       |             SIZEH             |
+      |       |       |       |       |                               |
+      -----------------------------------------------------------------
+
+      EMPT indicates that the FIFO has THEMPT or less data bytes in it.
+
+      FULL indicates that the FIFO has THFULL or less room for new data
+      bytes.
+
+      SIZEH is the high bits of the FIFO size.  The size is the maximum
+      number of data bytes the FIFO can hold, not the entire RAM size of
+      all the FIFO data structures.
+
+    SIZEL is the low 8 bits of of the FIFO size.  The upper bits are in
+    the SIZEH field of the FLAGS byte.  The remaining parameters are 8
+    bits when the size is 255 bytes or less, and 16 bits when 256 or more.
+
+    THEMPT and THFULL are the empty and full thresholds used to determine
+    the EMPT and FULL status reported in the FLAGS byte.
+
+    PUT and GET are the write and read indexes into the FIFO buffer,
+    respectively.  These can range from 0 to SIZE.
+
+    NEMPT is the number of free slots in the FIFO, and NFULL the number of
+    data bytes.
+
+  FIFORD: 9 dat
+
+    The data byte DAT was just read from the FIFO.
 
 
 Firmware versions
@@ -382,3 +436,6 @@ Firmware versions
     Updated to lastest library CMD module.  This allows commands to
     implemented in any module, not just in CMD.  Moved existing command
     routines to new CMDS module.
+
+    Added FIFO, for testing the new (2021) FIFO macros.  Added commands
+    FIFO, FIFOWR, and FIFORD.  Added responses FIFO and FIFORD.

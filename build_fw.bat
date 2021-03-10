@@ -8,6 +8,7 @@ call build_fwinit
 call src_aspic %srcdir% %fwname%_cmd
 call src_aspic %srcdir% %fwname%_cmds
 call src_aspic %srcdir% %fwname%_dcc
+call src_aspic %srcdir% %fwname%_fift
 call src_aspic %srcdir% %fwname%_iic
 call src_aspic %srcdir% %fwname%_init
 call src_aspic %srcdir% %fwname%_intr

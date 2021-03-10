@@ -835,7 +835,9 @@ var
   bbuf: array [0..bbuf_last] of int8u_t; {scratch byte buffer}
   bbufn: sys_int_machine_t;            {number of entries in BBUF}
   b: sys_int_machine_t;                {scratch data byte value}
-  i1, i2, i3, i4: sys_int_machine_t;   {response parameters and scratch integers}
+  i1, i2, i3, i4, i5, i6, i7:
+    sys_int_machine_t;                 {response parameters and scratch integers}
+  b1, b2: boolean;                     {boolean response parameters}
   tk: string_var80_t;                  {scratch token}
   stat: sys_err_t;                     {completion status}
 
@@ -892,6 +894,25 @@ retry:                                 {back here after reading new chunk into b
   ibufi := 0;                          {reset to fetch from start of buffer}
 
   goto retry;                          {back to return byte from new chunk}
+  end;
+{
+******************************
+*
+*   Function GETI16U
+*   This function is local to THREAD_IN.
+*
+*   Returns the next two input bytes interpreted as a unsigned 16 bit integer.
+}
+function geti16u                       {get next 2 bytes as unsigned integer}
+  :sys_int_machine_t;
+
+var
+  ii: sys_int_machine_t;
+
+begin
+  ii := lshft(ibyte, 8);               {get the high byte}
+  ii := ii ! ibyte;                    {get the low byte}
+  geti16u := ii;
   end;
 {
 ******************************
@@ -1055,6 +1076,76 @@ next_rsp:                              {back here to read each new response pack
   dcc_packet (bbuf, bbufn);            {handle this new DCC packet}
   end;
 {
+*   FIFO flags sizel thempt thfull put get
+}
+8: begin
+  i1 := ibyte;                         {FLAGS}
+  b1 := (i1 & 16#80) <> 0;             {EMPT}
+  b2 := (i1 & 16#40) <> 0;             {FULL}
+  i2 := ibyte;                         {SIZEL}
+  i1 := lshft(i1 & 16#F, 8) ! i2;      {assemble SIZE in I1}
+  if i1 <= 255
+    then begin                         {the remaining parameters are 8 bit}
+      i2 := ibyte;                     {THEMPT}
+      i3 := ibyte;                     {THFULL}
+      i4 := ibyte;                     {PUT}
+      i5 := ibyte;                     {GET}
+      i6 := ibyte;                     {N empty}
+      i7 := ibyte;                     {N full}
+      end
+    else begin                         {the remaining parameters are 16 bit}
+      i2 := geti16u;                   {THEMPT}
+      i3 := geti16u;                   {THFULL}
+      i4 := geti16u;                   {PUT}
+      i5 := geti16u;                   {GET}
+      i6 := geti16u;                   {N empty}
+      i7 := geti16u;                   {N full}
+      end
+    ;
+  {
+  *   All parameters have been read, and the following variables set:
+  *
+  *     I1  -  FIFO size in bytes.
+  *     I2  -  Empty threshold.
+  *     I3  -  Full threshold.
+  *     I4  -  PUT index.
+  *     I5  -  GET index.
+  *     i6  -  N emtpy.
+  *     i7  -  N full.
+  *
+  *     B1  -  Empty.
+  *     B2  -  Full.
+  }
+  lockout;
+  write ('FIFO size ', i1, ', ', i7:4, ' fl ', i6:4, ' mt');
+  write (', Empty ');
+  if b1
+    then write ('YES')
+    else write (' NO');
+  write (' at ', i2:4);
+  write (', Full ');
+  if b2
+    then write ('YES')
+    else write (' NO');
+  write (' at ', i3:4);
+  write (', PUT ', i4:4);
+  write (', GET ', i5:4);
+  writeln;
+  unlockout;
+  end;
+{
+*   FIFORD dat
+}
+9: begin
+  i1 := ibyte;                         {get the data byte value}
+
+  lockout;
+  write ('FIFO read ');
+  whex (i1);
+  writeln (i1:4);
+  unlockout;
+  end;
+{
 *   Unrecognized response opcode.
 }
 otherwise
@@ -1198,6 +1289,9 @@ done_opts:                             {done with all the command line options}
   string_append_token (cmds, string_v('IICR')); {14}
   string_append_token (cmds, string_v('PHF')); {15}
   string_append_token (cmds, string_v('DCC')); {16}
+  string_append_token (cmds, string_v('FIFO')); {17}
+  string_append_token (cmds, string_v('FIWR')); {18}
+  string_append_token (cmds, string_v('FIRD')); {19}
 
 loop_cmd:                              {back here each new input line}
   sendall;                             {make sure all previous buffered data is sent}
@@ -1265,6 +1359,9 @@ loop_cmd:                              {back here each new input line}
   writeln ('DCC IDLE|NIDLE - Enable/disable showing DCC idle packets');
   writeln ('DCC DIFF    - Show DCC packets different from previous');
   writeln ('DCC NEW     - Show only new DCC packets relative to recent history');
+  writeln ('FIFO        - Show FIFO current state');
+  writeln ('FIWR dat [n] - Write N bytes to FIFO');
+  writeln ('FIRD [n]    - Read N bytes from FIFO');
   unlockout;
   end;
 {
@@ -1508,6 +1605,59 @@ loop_cmd:                              {back here each new input line}
 otherwise
     goto badcmd;
     end;
+  end;
+{
+*   FIFO
+}
+17: begin
+  if not_eos then goto err_extra;
+
+  send_acquire;
+  sendb (15);                          {FIFO opcode}
+  send_release;
+  end;
+{
+*   FIWR dat [n]
+}
+18: begin
+  i1 := next_int (0, 255, stat);       {get the data byte value}
+  if sys_error(stat) then goto err_cmparm;
+  i2 := next_int (1, 256, stat);       {get number of times to write data byte}
+  if sys_error(stat)
+    then begin                         {EOL or error}
+      if not string_eos(stat) then goto err_cmparm; {hard error ?}
+      i2 := 1;                         {default number of times to write the byte}
+      end
+    else begin                         {got N, no error}
+      if not_eos then goto err_extra;
+      end
+    ;
+
+  send_acquire;
+  sendb (16);                          {FIFOWR opcode}
+  sendb (i1);                          {data byte value}
+  sendb (i2 - 1);                      {number of times to write the byte - 1}
+  send_release;
+  end;
+{
+*   FIRD [n]
+}
+19: begin
+  i1 := next_int (1, 256, stat);       {get number of bytes to read}
+  if sys_error(stat)
+    then begin                         {EOL or error}
+      if not string_eos(stat) then goto err_cmparm; {hard error ?}
+      i1 := 1;                         {default number of bytes to read}
+      end
+    else begin                         {got N, no error}
+      if not_eos then goto err_extra;
+      end
+    ;
+
+  send_acquire;
+  sendb (17);                          {FIFORD opcode}
+  sendb (i2 - 1);                      {number of bytes to read - 1}
+  send_release;
   end;
 {
 *   Unrecognized command.

@@ -1,6 +1,7 @@
 u1ex_cmd.o
 u1ex_cmds.o
 u1ex_dcc.o
+u1ex_fift.o
 u1ex_iic.o
 u1ex_init.o
 u1ex_intr.o

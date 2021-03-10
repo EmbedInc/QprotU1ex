@@ -86,7 +86,7 @@
 ;     CMD<name>_PUT8
 ;
 ;       Sends the byte in REG0 out the response stream.  The response stream
-;      lock must be held when this routine is called.
+;       lock must be held when this routine is called.
 ;
 ;     CMD<name>_PUT16
 ;
