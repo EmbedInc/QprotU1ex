@@ -1656,7 +1656,7 @@ otherwise
 
   send_acquire;
   sendb (17);                          {FIFORD opcode}
-  sendb (i2 - 1);                      {number of bytes to read - 1}
+  sendb (i1 - 1);                      {number of bytes to read - 1}
   send_release;
   end;
 {

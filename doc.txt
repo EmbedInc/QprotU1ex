@@ -431,11 +431,13 @@ Firmware versions
     pulse duration are set with constants in the main include file.
     Resolution is 1 ms, and maximum duration is 65.535 seconds.
 
-  U1EX 17
+  U1EX 17 seq 47, 10 Mar 2021
 
-    Updated to lastest library CMD module.  This allows commands to
+    Updated to lastest library CMD module.  This allows commands to be
     implemented in any module, not just in CMD.  Moved existing command
     routines to new CMDS module.
 
     Added FIFO, for testing the new (2021) FIFO macros.  Added commands
-    FIFO, FIFOWR, and FIFORD.  Added responses FIFO and FIFORD.
+    FIFO, FIFOWR, and FIFORD.  Added responses FIFO and FIFORD.  FIFO
+    configured to hold 300 bytes in this version.  This uses 16 bit
+    indexes, and seems to work correctly.

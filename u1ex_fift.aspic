@@ -26,7 +26,7 @@
 ;
 ;   Configuration constants.
 ;
-/const   fifosz  integer = 5 ;max number of data bytes the FIFO can hold
+/const   fifosz  integer = 300 ;max number of data bytes the FIFO can hold
 /const   fifoadr integer = -1 ;FIFO start address, -1 lets linker place
 /const   thempt  integer = 3 ;empty when this many or less bytes in FIFO
 /const   thfull  integer = 2 ;full when this many or less empty slots in FIFO
