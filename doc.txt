@@ -1,5 +1,5 @@
                          Embed Inc U1EX Firmware
-                              10 March 2021
+                              11 March 2021
 
 The purpose of the U1EX firmware is to provide a example of using the
 Embed Inc USB drivers for the USB peripheral of a Microchip PIC 18F2550
@@ -441,3 +441,9 @@ Firmware versions
     FIFO, FIFOWR, and FIFORD.  Added responses FIFO and FIFORD.  FIFO
     configured to hold 300 bytes in this version.  This uses 16 bit
     indexes, and seems to work correctly.
+
+  U1EX 18
+
+    Interrupts are no longer disabled/enabled around test FIFO
+    multi-instruction operations on that need to be atomic.  This is
+    because the test FIFO is never accessed from interrupt code.

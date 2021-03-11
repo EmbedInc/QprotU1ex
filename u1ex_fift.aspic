@@ -30,6 +30,7 @@
 /const   fifoadr integer = -1 ;FIFO start address, -1 lets linker place
 /const   thempt  integer = 3 ;empty when this many or less bytes in FIFO
 /const   thfull  integer = 2 ;full when this many or less empty slots in FIFO
+/set no_intr_disable true    ;no need to disable intr around FIFO operations
 
 lbank    equ     0           ;register bank for the local state of this module
 ;
