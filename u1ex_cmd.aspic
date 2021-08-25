@@ -480,9 +480,11 @@ cmd_next unbank
 /if enab_phase then
          cmd_entry 14, cm_phinc ;set phase outputs increment per ms
   /endif
+/if enab_fift then
          cmd_entry 15, fift_send_fifo ;get FIFO status
          cmd_entry 16, cm_fifowr ;write to the FIFO
          cmd_entry 17, cm_fiford ;read from the FIFO
+  /endif
 
          dsp_end cmd_table   ;end of command opcodes dispatch table
 

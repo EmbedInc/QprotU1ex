@@ -23,6 +23,7 @@
 ;   DCC levels.
 ;
 /include "u1ex.ins.aspic"
+/if enab_dcc then
 
          extern  intr_ret_ccp2 ;CCP2 interrupt routine jumps here when done
 
@@ -33,66 +34,66 @@
 ;   Constants that reflect external physical realities.  These are not design
 ;   choices in this firmware.
 ;
-/const   tsmin   real = 52e-6 ;min acceptable short bit time, seconds
-/const   tsmax   real = 64e-6 ;max acceptable short bit time, seconds
-/const   tlmin   real = 90e-6 ;min acceptable long bit time, seconds
-/const   tlmax   real = 10e-3 ;max acceptable long bit time, seconds
-/const   terr    real = 2e-6 ;our DCC transition time measurement error, seconds
-/const   npream  integer = 22 ;min consecutive short levels for valid preamble
+  /const tsmin real = 52e-6  ;min acceptable short bit time, seconds
+  /const tsmax real = 64e-6  ;max acceptable short bit time, seconds
+  /const tlmin real = 90e-6  ;min acceptable long bit time, seconds
+  /const tlmax real = 10e-3  ;max acceptable long bit time, seconds
+  /const terr real = 2e-6    ;our DCC transition time measurement error, seconds
+  /const npream integer = 22 ;min consecutive short levels for valid preamble
 ;
 ;   Configuration constants.
 ;
-/const   maxdcc  integer = 8 ;max total DCC data (not error) bytes per packet
+  /const maxdcc integer = 8  ;max total DCC data (not error) bytes per packet
 lbank    equ     2           ;register bank for the local state of this module
 ;
 ;   Derived constants.
 ;
-/block                       ;context for temporary variables for computations
-  /var local ii integer
-  /var local r real
-  /var local s string
+  /block                     ;context for temporary variables for computations
+    /var local ii integer
+    /var local r real
+    /var local s string
 
   //   Determine the timer prescaler.  It will be selected so that a little more
   //   than the maximum long time can be measured by the 16 bit timer (65535
   //   ticks).  The timer is run from the instruction clock with prescaler
   //   choices of 1, 2, 4, or 8.
   //
-  /set ii 1                  ;init prescaler value to try
-  /loop
-    /set r [/ ii freq_inst]  ;timer increment period
-    /set r [* r 65536]       ;timer wrap period
-    /if [>= r [* tlmax 1.2]] then ;enough for long bit with some margin ?
-      /quit                  ;II is prescaler divide value
-      /endif
-    /set ii [* ii 2]         ;make next prescaler value
-    /if [> ii 8] then        ;exhausted all possible prescaler values ?
-      /set s ''
-      /set s str [s "DCC long level of " [eng tlmax] "s "]
-      /set s str [s "too long for max prescaler and "]
-      /set s str [s [eng freq_inst] "Hz clock"]
-      /show "  " s
+    /set ii 1                ;init prescaler value to try
+    /loop
+      /set r [/ ii freq_inst] ;timer increment period
+      /set r [* r 65536]     ;timer wrap period
+      /if [>= r [* tlmax 1.2]] then ;enough for long bit with some margin ?
+        /quit                ;II is prescaler divide value
+        /endif
+      /set ii [* ii 2]       ;make next prescaler value
+      /if [> ii 8] then      ;exhausted all possible prescaler values ?
+        /set s ''
+        /set s str [s "DCC long level of " [eng tlmax] "s "]
+        /set s str [s "too long for max prescaler and "]
+        /set s str [s [eng freq_inst] "Hz clock"]
+        /show "  " s
          error   PRESC
          end
-      /stop
-      /endif
-    /endloop                 ;back to try with next prescaler in II
-  /const presc integer = ii  ;save final computed prescaler divide value
+        /stop
+        /endif
+      /endloop               ;back to try with next prescaler in II
+    /const presc integer = ii ;save final computed prescaler divide value
 
-  /set ii [rnd [log2 presc]] ;make 0-3 prescaler number
-  /const t3ps integer = ii   ;prescaler field value in T3CON
-  /const ttick real = [/ presc freq_inst] ;timer tick time
-  /const nsmin integer = [rnd [/ [- tsmin terr] ttick]] ;min ticks for short
-  /const nsmax integer = [rnd [/ [+ tsmax terr] ttick]] ;max ticks for short
-  /const nlmin integer = [rnd [/ [- tlmin terr] ttick]] ;min ticks for long
-  /const nlmax integer = [rnd [/ [+ tlmax terr] ttick]] ;max ticks for long
+    /set ii [rnd [log2 presc]] ;make 0-3 prescaler number
+    /const t3ps integer = ii ;prescaler field value in T3CON
+    /const ttick real = [/ presc freq_inst] ;timer tick time
+    /const nsmin integer = [rnd [/ [- tsmin terr] ttick]] ;min ticks for short
+    /const nsmax integer = [rnd [/ [+ tsmax terr] ttick]] ;max ticks for short
+    /const nlmin integer = [rnd [/ [- tlmin terr] ttick]] ;min ticks for long
+    /const nlmax integer = [rnd [/ [+ tlmax terr] ttick]] ;max ticks for long
 
-  /set s ""
-  /set s [str s "Prescaler " presc]
-  /set s [str s ", resolution " [eng ttick] "s"]
-  /set s [str s ", short " nsmin "-" nsmax " ticks"]
-  /set s [str s ", long " nlmin "-" nlmax " ticks"]
-  /show "  " s
-  /endblock
+    /set s ""
+    /set s [str s "Prescaler " presc]
+    /set s [str s ", resolution " [eng ttick] "s"]
+    /set s [str s ", short " nsmin "-" nsmax " ticks"]
+    /set s [str s ", long " nlmin "-" nlmax " ticks"]
+    /show "  " s
+    /endblock
 lbankadr equ     bankadr(lbank) ;address within local state register bank
 
 ;*******************************************************************************
@@ -153,12 +154,12 @@ dccrecv  res     [+ maxdcc 1] ;bits received in DCC packet so far
 #define flg_inpack dccflags, 3 ;in packet, not waiting for start of packet
 #define flg_dat dccflags, 4  ;value of received data bit
 
-/if debug then
+  /if debug then
          global  dccflags, lastcap, newcap, capdiff
          global  shleft, ndcc, bmask, icnt
          global  nslow, nsmax, nllow, nlmax
          global  dccrecv
-  /endif
+    /endif
 
 
 .dcc     code
@@ -216,17 +217,17 @@ dccrecv  res     [+ maxdcc 1] ;bits received in DCC packet so far
 //
 //   W is trahsed.  VAR1 and VAR2 are not altered.
 //
-/macro compare
-  /var local s
+  /macro compare
+    /var local s
 
-  /set s [str "         movf    " [qstr [arg 1]] "+0, w"]
-  /call startcomm s
-  /set s [str s "compare " [ucase [qstr [arg 1]]] " to " [ucase [qstr [arg 2]]]]
-  /write s
+    /set s [str "         movf    " [qstr [arg 1]] "+0, w"]
+    /call startcomm s
+    /set s [str s "compare " [ucase [qstr [arg 1]]] " to " [ucase [qstr [arg 2]]]]
+    /write s
          subwf   [arg 2]+0, w
          movf    [arg 1]+1, w
          subwfb  [arg 2]+1, w
-  /endmac
+    /endmac
 
 ;*******************************************************************************
 ;
@@ -482,5 +483,6 @@ ev_copy  unbank
 
          setflag dccpack     ;notify foreground code of the new packet
          gjump   intr_ret_ccp2 ;done with this interrupt
+  /endif                     ;end of DCC processing enabled
 
          end

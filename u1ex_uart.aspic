@@ -16,16 +16,39 @@
 ;
 ;   Low level UART handler.
 ;
+/const   fifos_new bool = true ;use new FIFOs, don't need to disable interrupts
 /include "u1ex.ins.aspic"
 
 ;*******************************************************************************
 ;
 ;   Configuration constants.
 ;
-/const   baud    real = 115200 ;desired baud rate
-/const   finsz   integer = 32 ;input FIFO size, bytes
-/const   fousz   integer = 0 ;no output FIFO, uses polled I/O
-/const   tasking bool = true ;Embed multi-tasking system is in use
+
+
+
+
+;
+;   General UART configuration.
+;
+;   BAUD is set in the project include file because it is board-specific.
+;
+/const   un      integer = 0 ;1-N number of this UART, 0 = only
+/const   show_baud bool = false ;show actual baud rate during assembly
+/const   tasking bool = true ;using the multi-tasking system, PIC 18 only
+/const   lbank   integer = 0 ;bank for local state of this module
+;
+;   Receiver configuration.
+;
+/const   enab_in bool = true ;enable the receiver
+/const   enab_inflag bool = true ;maintain FLAG_SIN
+/const   finsz   integer = 32 ;input FIFO size, 0 disables FIFO and interrupt
+;
+;   Transmitter configuration.
+;
+/const   enab_out bool = true ;enable the transmitter
+/const   enab_outflag bool = true ;maintain FLAG_SOUT
+/const   fousz   integer = 16 ;output FIFO size, 0 disables FIFO and interrupt
+/const   use_txmt bool = false ;disable transmit ready bug workaround using TXMT
 
 /include "(cog)src/pic/uart.ins.aspic"
          end

@@ -19,7 +19,7 @@
 /include "u1ex.ins.aspic"
 
          extern  uart_intr_recv ;receive interrupt routine in UART module
-         extern  intr_ccp2   ;CCP2 interrupt routine in DCC module
+         extern  uart_intr_xmit ;transmit interrupt routine in UART module
 
          extern_flags        ;declare global flag bits EXTERN
 
@@ -263,11 +263,14 @@ intr_high_cont unbank
 ;
 ;   Check for CCP2 interrupt.
 ;
+/if enab_dcc then
+         extern  intr_ccp2   ;CCP2 interrupt routine in DCC module
          dbankif pir2
          btfss   pir2, ccp2if
          jump    no_ccp2_intr
          gjump   intr_ccp2   ;handle interrupt, will go to INTR_RET_CCP2 on done
 no_ccp2_intr dbankis pir2
+  /endif
 ;
 ;   Check for timer 2 interrupt.
 ;
@@ -282,6 +285,16 @@ no_ccp2_intr dbankis pir2
          jump    no_uart_recv
          gjump   uart_intr_recv ;handle interrupt, will go to INTR_RET_UART on done
 no_uart_recv dbankis pir1
+;
+;   Check for UART transmit ready interrupt.
+;
+         dbankif pie1
+         btfss   pie1, txie  ;UART transmit interrupt is enabled ?
+         dbankif pir1
+         btfss   pir1, txif  ;UART transmit interrupt condition is signalled ?
+         jump    no_uart_xmit
+         gjump   uart_intr_xmit ;handle interrupt, will go to INTR_RET_UART on done
+no_uart_xmit unbank
 
          reset               ;unexpected interrupt, should never happen
 
@@ -374,8 +387,11 @@ done_phase
 ;   instruction.
 ;
 intr_ret unbank              ;common high/single priority interrupt exit point
-         glbent  intr_ret_ccp2 ;CCP2 interrupt routine returns here when done
          glbent  intr_ret_uart ;UART interrupt routine returns here when done
+
+/if enab_dcc then
+         glbent  intr_ret_ccp2 ;CCP2 interrupt routine returns here when done
+  /endif
 
   if save_fsr1               ;need to restore FSR1 ?
          popreg  fsr1h

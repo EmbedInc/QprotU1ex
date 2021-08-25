@@ -1,26 +1,26 @@
-Program MPMEM built on Mon 1 Mar 2021 16:37
+Program MPMEM built on Sun 25 Jul 2021 10:03
 Reading MPLINK map file "C:\embed\src\qprot\u1ex.map"
-14 data memory regions found from 000 to 781:
+14 data memory regions found from 000 to 605:
 
                     .REGS: 000-010, length    17, type UDATA
-               .udata_acs: 011-036, length    38, type UDATA
-                           037-05F, length    41
+               .udata_acs: 011-01E, length    14, type UDATA
+                           01F-05F, length    65
                    .STACK: 060-09F, length    64, type UDATA
-                   .BANK0: 0A0-0A3, length     4, type UDATA
-               .TASK2CTRL: 0A4-0E8, length    69, type UDATA
-                           0E9-0FF, length    23
+                   .BANK0: 0A0-0A0, length     1, type UDATA
+               .TASK2CTRL: 0A1-0E5, length    69, type UDATA
+             .UART_FIFOUT: 0E6-0F8, length    19, type UDATA
+                           0F9-0FF, length     7
 
-                   .BANK1: 100-16A, length   107, type UDATA
-               .TASK1CTRL: 16B-1AF, length    69, type UDATA
-               .TASK0CTRL: 1B0-1F4, length    69, type UDATA
-                           1F5-1FF, length    11
+                   .BANK1: 100-16D, length   110, type UDATA
+               .TASK1CTRL: 16E-1B2, length    69, type UDATA
+               .TASK0CTRL: 1B3-1F7, length    69, type UDATA
+                           1F8-1FF, length     8
 
-                   .BANK2: 200-229, length    42, type UDATA
-                           22A-3FF, length   470
+                   .BANK2: 200-220, length    33, type UDATA
+               .CMD_STACK: 221-248, length    40, type UDATA
+             .UART_FIFOIN: 249-26B, length    35, type UDATA
+                           26C-3FF, length   404
 
                    .USBBD: 400-455, length    86, type UDATA
                   .USBBUF: 456-605, length   432, type UDATA
-                 .FIFTDAT: 606-736, length   305, type UDATA
-               .CMD_STACK: 737-75E, length    40, type UDATA
-             .UART_FIFOIN: 75F-781, length    35, type UDATA
-                           782-7FF, length   126
+                           606-6FF, length   250

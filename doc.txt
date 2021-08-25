@@ -1,5 +1,5 @@
                          Embed Inc U1EX Firmware
-                              11 March 2021
+                             25 August 2021
 
 The purpose of the U1EX firmware is to provide a example of using the
 Embed Inc USB drivers for the USB peripheral of a Microchip PIC 18F2550
@@ -442,8 +442,21 @@ Firmware versions
     configured to hold 300 bytes in this version.  This uses 16 bit
     indexes, and seems to work correctly.
 
-  U1EX 18
+  U1EX 18 seq 33, 25 Aug 2021
 
     Interrupts are no longer disabled/enabled around test FIFO
     multi-instruction operations on that need to be atomic.  This is
     because the test FIFO is never accessed from interrupt code.
+
+    Added build-time constants for selectively enabling DCC command
+    interpretation and the test FIFO.  These are disabled in this version.
+
+    UART sending is not interrupt-driven, with 16 byte FIFO.  The UART now
+    uses the "new" FIFOs, which don't require the foreground code to
+    disable interrupts around a FIFO access that could also be accessed by
+    interrupt code.
+
+    Added new application to produce a fixed output pulse delayed from the
+    leading edge of an input signal.  The new build-time switch ENAB_DELAY
+    enables this application, which is enabled in this firmware version.
+    In this version, the delay is 250 ms, and the pulse is 250 ms wide.

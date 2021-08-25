@@ -33,8 +33,11 @@ n_iregs  equ     1           ;number of IREGn registers for interrupt use
 ;
 ;   Switches that enable various different applications.
 ;
+/const   enab_dcc bool = false ;DCC interpretation on RB3
 /const   enab_phase bool = false ;3 phase outputs on RB0-RB2
+/const   enab_fift bool = false ;commands and response to test FIFO routines
 /const   enab_blip bool = false ;enable periodic blip on RB2
+/const   enab_delay bool = true ;enable delay from RB7 low to RB2 blip
 
 /include "u1exlib.ins.aspic"
 ;
@@ -45,7 +48,8 @@ gbankadr equ     0           ;adr within globals bank (access bank on PIC18)
 /const   cmdbufsz integer = 64 ;size of command processor scratch buffer
 
 /const   blip_per real = 10.0 ;blip period, seconds
-/const   blip_on real = 0.250 ;blip on time, seconds
+/const   blip_on real = 0.250 ;seconds blip on, used by BLIP and DELAY apps
+/const   delay_t real = 0.250 ;seconds delay from input to outpu, DELAY app
 
 tsksave  set     0           ;build the mask of registers for TASK_YIELD to save
 tsksave  set     tsksave | regf0
@@ -133,7 +137,9 @@ cmdbufsz equ     [v cmdbufsz] ;size of command processor scratch buffer
 /flag    iicon               ;I/O pins set up for IIC bus
 /flag    iicack              ;IIC bus ACK received or to write
 
-/flag    dccpack             ;complete DCC packet is ready to be sent to host
+/if enab_dcc then
+  /flag dccpack              ;complete DCC packet is ready to be sent to host
+  /endif
 
 ;**********
 ;
@@ -167,8 +173,21 @@ cmdbufsz equ     [v cmdbufsz] ;size of command processor scratch buffer
 /outbit  sda     portb 0     ;IIC data line, output until IIC enabled
 /outbit  scl     portb 1     ;IIC clock line, output until IIC enabled
 /outbit  rb2     portb 2
-/inbit   dcc     portb 3     ;DCC input line
-/outbit  rb4     portb 4     ;pushbutton
+
+/if enab_dcc
+  /then
+    /inbit dcc portb 3       ;DCC input line
+  /else
+    /outbit rb3 portb 3
+  /endif
+
+/if enab_delay
+  /then
+    /inbit rb4 portb 4
+  /else
+    /outbit rb4 portb 4
+  /endif
+
 /outbit  rb5     portb 5     ;pushbutton, PGM, 910 kOhm to ground
 /outbit  rb6     portb 6     ;pushbutton, PGC
 /outbit  rb7     portb 7     ;pushbutton, PGD

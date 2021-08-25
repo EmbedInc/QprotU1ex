@@ -21,9 +21,12 @@
 /include "u1ex_usb.ins.aspic"
 
          extern  cnt1ms      ;1 ms clock tick counter byte
+         extern_flags        ;declare global flag bits EXTERN
+
+/if enab_dcc then
          extern  ndccpack    ;number of data bytes received DCC packet
          extern  dccpack     ;received DCC packet data bytes buffer
-         extern_flags        ;declare global flag bits EXTERN
+  /endif
 
 ;*******************************************************************************
 ;
@@ -33,16 +36,19 @@
 /var new ii integer
 /var new r real
 
-/if enab_blip then           ;blip output enabled ?
-  /const blip_pertk integer = [rnd [* blip_per 1000]] ;blip period, 1 ms ticks
+/if [or enab_blip enab_delay] then ;blip output in use ?
   /const blip_ontk integer = [rnd [* blip_on 1000]] ;blip on time, 1 ms ticks
-  /if [> blip_pertk 65535] then
-         error   "Blip period too long"
+  /if [> blip_ontk 65535] then
+         error   "Blip on time too long"
          end
     /stop
     /endif
-  /if [> blip_ontk 65535] then
-         error   "Blip on time too long"
+  /endif
+
+/if enab_blip then           ;blip output enabled ?
+  /const blip_pertk integer = [rnd [* blip_per 1000]] ;blip period, 1 ms ticks
+  /if [> blip_pertk 65535] then
+         error   "Blip period too long"
          end
     /stop
     /endif
@@ -51,6 +57,21 @@
   /append s "Blip period " [eng r] "s"
   /set r [/ blip_ontk 1000]
   /append s ", on time " [eng r] "s"
+  /show "  " s
+  /endif
+
+/if enab_delay then          ;delayed signal enabled ?
+  /const delay_tk integer = [rnd [* delay_t 1000]] ;delay time, 1 ms ticks
+  /if [> delay_tk 65535] then
+         error   "Delay period too long"
+         end
+    /stop
+    /endif
+  /set s ""
+  /set r [/ delay_tk 1000]
+  /append s "Delay time " [eng r] "s"
+  /set r [/ blip_ontk 1000]
+  /append s ", output on time " [eng r] "s"
   /show "  " s
   /endif
 
@@ -77,6 +98,12 @@ blefper  res     2           ;1 ms ticks left in current blip period
 blefon   res     2           ;1 ms ticks left in blip on time
   /endif
 
+/if enab_delay then
+deleft   res     2           ;1 ms ticks left until delay elapsed
+blefon   res     2           ;1 ms ticks left in blip on time
+  /endif
+
+/if enab_dcc then
 dccleft  res     1           ;N DCC packet data bytes left to send to host
          ;
          ;   Flags in DCCLEFT.  Only the low 4 bits are needed to count the
@@ -94,10 +121,10 @@ dccleft  res     1           ;N DCC packet data bytes left to send to host
 #define ev_dccopc dccleft, 6 ;send DCC response opcode
 #define ev_dccnb dccleft, 5  ;send number of data bytes byte in DCC response
 #define ev_dccn h'0F'        ;mask for number of data bytes left to send
+  /endif
 
 
 .main    code
-
 ;*******************************************************************************
 ;
 ;   Routine MAIN
@@ -112,14 +139,27 @@ dccleft  res     1           ;N DCC packet data bytes left to send to host
 ;   Initialize the state managed by this module.
 ;
          dbankif lbankadr
-         loadk8  dccleft, 0  ;init to not sending DCC packet to host
-
          movff   cnt1ms, last1ms ;init to up to date with current clock
+
+/if enab_dcc then
+         loadk8  dccleft, 0  ;init to not sending DCC packet to host
+  /endif
 
 /if enab_blip then
          dbankif lbankadr
          loadk16 blefper, 0  ;start first period next clock tick
          loadk16 blefon, 0   ;init to blip output is off
+  /endif
+
+/if enab_delay then
+         dbankif lbankadr
+         loadk16 deleft, [- delay_tk 1] ;init to whole delay period before blip
+         loadk16 blefon, 0   ;init to not doing a blip
+
+         dbankif intcon2
+         bcf     intcon2, rbpu ;enable weak pullups on port B input
+         dbankif trisb
+         bsf     trisb, trisb4 ;make RB4 an input
   /endif
 
 ;**********
@@ -145,6 +185,7 @@ no_usbreset
 ;
 ;   Handle new DCC packet received.
 ;
+/if enab_dcc then
          skip_flag dccpack   ;a new received DCC packet is available ?
          jump    d_dccpack   ;no
          dbankif lbankadr
@@ -158,10 +199,12 @@ no_usbreset
          bsf     ev_dcclock  ;set event to acquire response stream lock
 
 d_dccpack unbank
+  /endif
 ;
 ;   Acquire response stream lock for sending DCC packet if this is pending and
 ;   the lock can be acquired immediately.
 ;
+/if enab_dcc then
          dbankif lbankadr
          btfss   ev_dcclock  ;need to acquire response stream lock
          jump    n_dcclock   ;no
@@ -174,9 +217,11 @@ d_dccpack unbank
          jump    loop_main   ;done handling this event
 
 n_dcclock unbank
+  /endif
 ;
 ;   Send the DCC response opcode if this is pending and can be done immediately.
 ;
+/if enab_dcc then
          dbankif lbankadr
          btfss   ev_dccopc   ;need to send DCC response opcode ?
          jump    n_dccopc    ;no
@@ -196,10 +241,12 @@ d_dccopc unbank              ;done trying to send the byte
          jump    loop_main
 
 n_dccopc unbank
+  /endif
 ;
 ;   Send the number of DCC data bytes in the DCC response if this is pending and
 ;   can be done immediately.
 ;
+/if enab_dcc then
          dbankif lbankadr
          btfss   ev_dccnb    ;need to send number of data bytes byte ?
          jump    n_dccn      ;no
@@ -217,10 +264,12 @@ d_dccn   unbank              ;done trying to send the byte
          jump    loop_main
 
 n_dccn   unbank
+  /endif
 ;
 ;   Send a DCC response data byte if this is pending and one can be sent
 ;   immediately.
 ;
+/if enab_dcc then
          dbankif lbankadr
          movf    dccleft, w  ;get DCC response sending state
          bz      n_dccbyte   ;sending DCC response packet not in progress ?
@@ -254,6 +303,7 @@ d_dccbyte unbank
          jump    loop_main
 
 n_dccbyte unbank
+  /endif
 ;
 ;   Check for a new tick.  Skip ahead to D_TICK if there is no tick.
 ;
@@ -315,7 +365,69 @@ blip_off dbankis lbankadr
 
 d_blip   unbank              ;done with blip output this iteration
   /endif                     ;end of blip output enabled
+;
+;   1 ms clock tick.  Handle delayed signal causing blip, if enabled.
+;
+/if enab_delay then
+         ;
+         ;   Check for in a blip output.
+         ;
+         dbankif lbankadr
+         movf    blefon+0, w ;OR of ticks left in blip bytes
+         iorwf   blefon+1, w
+         bz      delay_nblip ;not in a blip right now
+         ;
+         ;   Count one less tick left in blip, and check for blip done.
+         ;
+         movlw   0           ;count one less tick left in blip
+         decf    blefon+0
+         subwfb  blefon+1
 
+         movf    blefon+0, w ;make 0 if blip done
+         iorwf   blefon+1, w
+         bnz     d_delay     ;blip not done yet ?
+
+         dbankif latb
+         bcf     latb, 2     ;end the blip output
+         jump    d_delay
+         ;
+         ;   Not in a blip.  Update the delay state.
+         ;
+delay_nblip unbank
+         dbankif portb
+         btfss   portb, 4    ;input is signal is off ?
+         jump    delay_inon  ;no, input signal is on
+         ;
+         ;   The input signal is off.  Reset to the full delay time.
+         ;
+         dbankif lbankadr
+         loadk16 deleft, [- delay_tk 1] ;reset to full delay time
+         jump    d_delay
+         ;
+         ;   The input signal is on.  Count down the current delay unless it is
+         ;   FFFFh.  That means the input has not been off since the last blip.
+         ;   A new blip is started when counting down from 0 ticks left.
+         ;
+delay_inon unbank
+         dbankif lbankadr
+	movf	deleft+0, w
+	andwf	deleft+1, w
+	addlw	1	;set C if delay count is FFFFh
+	skip_ncarr	;count if valid, OK to count down ?
+	jump	d_delay	;no, input required to be off first
+
+         movlw   0           ;count one less tick left in delay time
+         decf    deleft+0
+         subwfb  deleft+1
+         skip_borr           ;the delay time just ended ?
+         jump    d_delay     ;no, nothing more to do this tick
+
+         loadk16 blefon, [v blip_ontk] ;init number of ticks left in blip output
+         dbankif latb
+         bsf     latb, 2     ;turn on the blip output
+
+d_delay  unbank              ;done with delayed signal logic
+  /endif                     ;end of delayed signal enabled
 
 d_tick   unbank              ;done with all 1 ms tick handling
 ;
