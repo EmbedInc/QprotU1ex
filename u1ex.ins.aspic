@@ -37,7 +37,7 @@ n_iregs  equ     1           ;number of IREGn registers for interrupt use
 /const   enab_phase bool = false ;3 phase outputs on RB0-RB2
 /const   enab_fift bool = false ;commands and response to test FIFO routines
 /const   enab_blip bool = false ;enable periodic blip on RB2
-/const   enab_delay bool = true ;enable delay from RB7 low to RB2 blip
+/const   enab_delay bool = false ;enable delay from RB7 low to RB2 blip
 
 /include "u1exlib.ins.aspic"
 ;
