@@ -410,11 +410,11 @@ delay_nblip unbank
          ;
 delay_inon unbank
          dbankif lbankadr
-	movf	deleft+0, w
-	andwf	deleft+1, w
-	addlw	1	;set C if delay count is FFFFh
-	skip_ncarr	;count if valid, OK to count down ?
-	jump	d_delay	;no, input required to be off first
+         movf    deleft+0, w
+         andwf   deleft+1, w
+         addlw   1           ;set C if delay count is FFFFh
+         skip_ncarr          ;count if valid, OK to count down ?
+         jump    d_delay     ;no, input required to be off first
 
          movlw   0           ;count one less tick left in delay time
          decf    deleft+0
@@ -430,6 +430,22 @@ d_delay  unbank              ;done with delayed signal logic
   /endif                     ;end of delayed signal enabled
 
 d_tick   unbank              ;done with all 1 ms tick handling
+;
+;   Send a RECVU response if there is a byte available from the UART.
+;
+         skip_flag sin       ;a received byte is available ?
+         jump    n_recvu     ;no, skip this section
+
+         gcall   cmd_lock_out ;acquire exclusive lock on response stream to host
+         movlw   10          ;send RECVU response opcode
+         movwf   reg0
+         gcall   cmd_put8
+         gcall   uart_get    ;get the data byte from the UART
+         gcall   cmd_put8    ;send it to the host
+         gcall   cmd_unlock_out ;release lock on response stream
+         jump    loop_main
+
+n_recvu  unbank
 ;
 ;   Done checking all events.  Go back to the start of the event loop and check
 ;   them all again.

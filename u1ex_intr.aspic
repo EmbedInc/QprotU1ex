@@ -289,12 +289,13 @@ no_uart_recv dbankis pir1
 ;   Check for UART transmit ready interrupt.
 ;
          dbankif pie1
-         btfss   pie1, txie  ;UART transmit interrupt is enabled ?
+         btfss   pie1, txie  ;UART transmit interrupts enabled ?
+         jump    no_uart_xmit ;no
          dbankif pir1
-         btfss   pir1, txif  ;UART transmit interrupt condition is signalled ?
-         jump    no_uart_xmit
+         btfss   pir1, txif  ;UART transmit interrupt pending ?
+         jump    no_uart_xmit ;no
          gjump   uart_intr_xmit ;handle interrupt, will go to INTR_RET_UART on done
-no_uart_xmit unbank
+no_uart_xmit dbankis pir1
 
          reset               ;unexpected interrupt, should never happen
 

@@ -1,4 +1,4 @@
-Program MPMEM built on Sun 25 Jul 2021 10:03
+Program MPMEM built on Sun 22 May 2022 08:16
 Reading MPLINK map file "C:\embed\src\qprot\u1ex.map"
 14 data memory regions found from 000 to 605:
 
@@ -8,18 +8,18 @@ Reading MPLINK map file "C:\embed\src\qprot\u1ex.map"
                    .STACK: 060-09F, length    64, type UDATA
                    .BANK0: 0A0-0A0, length     1, type UDATA
                .TASK2CTRL: 0A1-0E5, length    69, type UDATA
-             .UART_FIFOUT: 0E6-0F8, length    19, type UDATA
-                           0F9-0FF, length     7
+                           0E6-0FF, length    26
 
-                   .BANK1: 100-16D, length   110, type UDATA
-               .TASK1CTRL: 16E-1B2, length    69, type UDATA
-               .TASK0CTRL: 1B3-1F7, length    69, type UDATA
-                           1F8-1FF, length     8
+                   .BANK1: 100-169, length   106, type UDATA
+               .TASK1CTRL: 16A-1AE, length    69, type UDATA
+               .TASK0CTRL: 1AF-1F3, length    69, type UDATA
+                           1F4-1FF, length    12
 
                    .BANK2: 200-220, length    33, type UDATA
-               .CMD_STACK: 221-248, length    40, type UDATA
-             .UART_FIFOIN: 249-26B, length    35, type UDATA
-                           26C-3FF, length   404
+             .UART_FIFOUT: 221-263, length    67, type UDATA
+               .CMD_STACK: 264-28B, length    40, type UDATA
+             .UART_FIFOIN: 28C-2AE, length    35, type UDATA
+                           2AF-3FF, length   337
 
                    .USBBD: 400-455, length    86, type UDATA
                   .USBBUF: 456-605, length   432, type UDATA

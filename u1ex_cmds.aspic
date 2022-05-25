@@ -147,6 +147,7 @@
 /include "u1ex.ins.aspic"
 
          extern  cmdbuf      ;command processor scratch buffer
+         extern  cnt1ms      ;incremented automatically every 1 ms
 
          extern_flags        ;declare global flag bits EXTERN
 
@@ -736,5 +737,62 @@ phinc_dintr
 
          return
   /endif
+
+;*******************************************************************************
+;
+;   Command SENDU n dat ... dat
+;
+;   Send data bytes out the UART.  N is the number of data bytes - 1.  Exactly
+;   N+1 data bytes follow N.
+;
+         command sendu
+
+         get8                ;get number of data bytes into REG1
+         incf    reg0, w
+         movwf   reg1
+;
+;   Loop for each byte.  REG1 contains the number of data byte left to do.  This
+;   value is 1-256, which means a value of 0 means 256 bytes left to do.
+;
+sendu_byte unbank
+         get8                ;get this byte into REG0
+         gcall   uart_put    ;write it to the UART
+         decf    reg1        ;count one less byte left to do
+         bnz     sendu_byte  ;back to copy next byte
+
+         return
+
+;*******************************************************************************
+;
+;   Command WAITMS w
+;
+;   Wait for W+1 millisecond clock ticks.
+;
+         command waitms
+
+         movff   cnt1ms, reg1 ;get snapshot of current 1 ms tick counter
+         get8                ;get number of ticks left to wait in REG0
+         incf    reg0
+;
+;   Loop until the wait time has elapsed.  REG0 contains the number of 1 ms tick
+;   left to wait, with a range of 1-256.  A value of 0 means to wait 256 ticks.
+;   REG1 contains the CNT1MS clock value we are current with.  A tick is
+;   detected by CNT1MS not matching REG1.
+;
+waitms_loop unbank
+         gcall   task_yield  ;give all other tasks a chance to run
+waitms_chtick unbank         ;back here to check for another tick
+         dbankif gbankadr
+         movf    cnt1ms, w   ;get the current clock tick counter
+         xorwf   reg1, w     ;compare to tick value up to date with
+         bz      waitms_loop ;no new tick, back to wait some more
+         ;
+         ;   There is a new tick.
+         ;
+         incf    reg1        ;update tick value now current with
+         decf    reg0        ;count one less tick left to wait
+         bnz     waitms_chtick ;back to check for another tick
+
+         return
 
          end

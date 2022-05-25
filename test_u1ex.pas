@@ -1146,6 +1146,18 @@ next_rsp:                              {back here to read each new response pack
   unlockout;
   end;
 {
+*   RECVU byte
+}
+10: begin
+  i1 := ibyte;                         {get the data byte}
+
+  lockout;
+  write ('UART recv ');
+  whex (i1);
+  writeln ('h ', i1:4);
+  unlockout;
+  end;
+{
 *   Unrecognized response opcode.
 }
 otherwise
@@ -1292,6 +1304,10 @@ done_opts:                             {done with all the command line options}
   string_append_token (cmds, string_v('FIFO')); {17}
   string_append_token (cmds, string_v('FIWR')); {18}
   string_append_token (cmds, string_v('FIRD')); {19}
+  string_append_token (cmds, string_v('U')); {20}
+  string_append_token (cmds, string_v('W')); {21}
+  string_append_token (cmds, string_v('T')); {22}
+
 
 loop_cmd:                              {back here each new input line}
   sendall;                             {make sure all previous buffered data is sent}
@@ -1362,6 +1378,8 @@ loop_cmd:                              {back here each new input line}
   writeln ('FIFO        - Show FIFO current state');
   writeln ('FIWR dat [n] - Write N bytes to FIFO');
   writeln ('FIRD [n]    - Read N bytes from FIFO');
+  writeln ('U dat ... dat  -  Send bytes out UART');
+  writeln ('W ms        - Wait N 1 ms clock ticks');
   unlockout;
   end;
 {
@@ -1657,6 +1675,65 @@ otherwise
   send_acquire;
   sendb (17);                          {FIFORD opcode}
   sendb (i1 - 1);                      {number of bytes to read - 1}
+  send_release;
+  end;
+{
+*   U dat ... dat
+*
+*   Write data bytes to UART.
+}
+20: begin
+  tk.len := 0;                         {init number of bytes entered}
+  while true do begin                  {back here to get each new byte}
+    i1 := next_int (-128, 255, stat);  {get this byte value}
+    if string_eos(stat) then exit;     {exhausted command line ?}
+    if sys_error(stat) then goto err_cmparm;
+    string_append1 (tk, chr(i1));      {add this byte to end of buffer}
+    end;                               {back to get next byte from command line}
+  if tk.len = 0 then goto done_cmd;    {no bytes to send ?}
+
+  tk.len := min(tk.len, 256);          {clip to max bytes we can send in one command}
+  send_acquire;
+  sendb (18);                          {SENDU opcode}
+  sendb (tk.len - 1);                  {number of data bytes - 1}
+  for i1 := 1 to tk.len do begin       {send the data bytes}
+    sendb (ord(tk.str[i1]));
+    end;
+  send_release;
+  end;
+{
+*   W ms
+}
+21: begin
+  i1 := next_int (1, 256, stat);       {get number of ms to wait}
+  if sys_error(stat) then goto err_cmparm;
+  if not_eos then goto err_extra;
+
+  send_acquire;
+  sendb (19);                          {WAITMS opcode}
+  sendb (i1 - 1);                      {ms to wait - 1}
+  send_release;
+  end;
+{
+*   T
+*
+*   This command has no dedicated purpose, and is re-written as needed to test
+*   something.
+}
+22: begin
+  if not_eos then goto err_extra;
+
+  send_acquire;
+  sendb (18);                          {send 55h}
+  sendb (0);
+  sendb (16#55);
+
+  sendb (19);                          {wait 100 ms}
+  sendb (99);
+
+  sendb (18);                          {send 55h}
+  sendb (0);
+  sendb (16#55);
   send_release;
   end;
 {

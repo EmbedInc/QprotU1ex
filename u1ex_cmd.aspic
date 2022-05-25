@@ -485,6 +485,8 @@ cmd_next unbank
          cmd_entry 16, cm_fifowr ;write to the FIFO
          cmd_entry 17, cm_fiford ;read from the FIFO
   /endif
+         cmd_entry 18, cm_sendu ;send bytes out the UART
+         cmd_entry 19, cm_waitms ;wait specified number of 1 ms ticks
 
          dsp_end cmd_table   ;end of command opcodes dispatch table
 

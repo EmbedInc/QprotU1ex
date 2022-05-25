@@ -1,5 +1,5 @@
                          Embed Inc U1EX Firmware
-                             25 August 2021
+                               25 May 2022
 
 The purpose of the U1EX firmware is to provide a example of using the
 Embed Inc USB drivers for the USB peripheral of a Microchip PIC 18F2550
@@ -173,6 +173,19 @@ Commands
     ignored.  A FIFORD response is sent for each byte that is actually
     read.  A FIFO response is sent after all reads are completed.
 
+  SENDU: 18 n dat ... dat
+
+    Send bytes out the UART.  The number of bytes to send is N+1.  There
+    must be exactly N+1 data bytes following N.
+
+  WAITMS: 19 w
+
+    Command processing will be stalled for W+1 millisecond clock ticks.
+    Additional commands can be sent immediately after a WAITMS command (to
+    the limit of the input buffer), but they will not be executed until
+    the wait time elapses.
+
+
 Responses
 
   NOP: 0
@@ -295,6 +308,10 @@ Responses
   FIFORD: 9 dat
 
     The data byte DAT was just read from the FIFO.
+
+  RECVU: 10 b
+
+    Reports that the byte B was received by the UART.
 
 
 Firmware versions
@@ -451,7 +468,7 @@ Firmware versions
     Added build-time constants for selectively enabling DCC command
     interpretation and the test FIFO.  These are disabled in this version.
 
-    UART sending is not interrupt-driven, with 16 byte FIFO.  The UART now
+    UART sending is now interrupt-driven, with 16 byte FIFO.  The UART now
     uses the "new" FIFOs, which don't require the foreground code to
     disable interrupts around a FIFO access that could also be accessed by
     interrupt code.
@@ -460,3 +477,8 @@ Firmware versions
     leading edge of an input signal.  The new build-time switch ENAB_DELAY
     enables this application, which is enabled in this firmware version.
     In this version, the delay is 250 ms, and the pulse is 250 ms wide.
+
+  U1EX 19 seq 20, 25 May 2022
+
+    Added commands SENDU, WAITMS.  Added response RECVU.  Fixed UART
+    sending bug.

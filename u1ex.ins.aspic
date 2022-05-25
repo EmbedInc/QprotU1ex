@@ -45,6 +45,7 @@ n_iregs  equ     1           ;number of IREGn registers for interrupt use
 ;
 namemaxlen equ   80          ;max allowed char in user-settable name string
 gbankadr equ     0           ;adr within globals bank (access bank on PIC18)
+/const   baud    real = 9600 ;UART baud rate
 /const   cmdbufsz integer = 64 ;size of command processor scratch buffer
 
 /const   blip_per real = 10.0 ;blip period, seconds

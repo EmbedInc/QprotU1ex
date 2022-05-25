@@ -24,9 +24,6 @@
 ;   Configuration constants.
 ;
 
-
-
-
 ;
 ;   General UART configuration.
 ;
@@ -47,7 +44,7 @@
 ;
 /const   enab_out bool = true ;enable the transmitter
 /const   enab_outflag bool = true ;maintain FLAG_SOUT
-/const   fousz   integer = 16 ;output FIFO size, 0 disables FIFO and interrupt
+/const   fousz   integer = 64 ;output FIFO size, 0 disables FIFO and interrupt
 /const   use_txmt bool = false ;disable transmit ready bug workaround using TXMT
 
 /include "(cog)src/pic/uart.ins.aspic"
