@@ -1307,6 +1307,7 @@ done_opts:                             {done with all the command line options}
   string_append_token (cmds, string_v('U')); {20}
   string_append_token (cmds, string_v('W')); {21}
   string_append_token (cmds, string_v('T')); {22}
+  string_append_token (cmds, string_v('HL')); {23}
 
 
 loop_cmd:                              {back here each new input line}
@@ -1380,6 +1381,7 @@ loop_cmd:                              {back here each new input line}
   writeln ('FIRD [n]    - Read N bytes from FIFO');
   writeln ('U dat ... dat  -  Send bytes out UART');
   writeln ('W ms        - Wait N 1 ms clock ticks');
+  writeln ('HL hexcmd dat ... dat  -  Cmd and data to Hardlock');
   unlockout;
   end;
 {
@@ -1734,6 +1736,42 @@ otherwise
   sendb (18);                          {send 55h}
   sendb (0);
   sendb (16#55);
+  send_release;
+  end;
+{
+*   HL HexCmd [dat ... dat]
+*
+*   Get Hardlock into command mode with command HexCmd, followed by arbitrary
+*   data bytes.
+}
+23: begin
+  i1 := next_int_hex (0, 255, stat);   {get the Hardlock command opcode}
+  if sys_error(stat) then goto err_cmparm;
+
+  tk.len := 0;                         {get any data bytes into TK}
+  while true do begin                  {back here to get each new byte}
+    i2 := next_int (-128, 255, stat);  {get this byte value}
+    if string_eos(stat) then exit;     {exhausted command line ?}
+    if sys_error(stat) then goto err_cmparm;
+    string_append1 (tk, chr(i2));      {add this byte to end of buffer}
+    end;                               {back to get next byte from command line}
+
+  send_acquire;
+  sendb (18);                          {SENDU opcode}
+  sendb (2);                           {number of data byte - 1}
+  sendb (ord('!'));                    {Hardlock wakeup sequence}
+  sendb (ord('!'));
+  sendb (ord('!'));
+
+  sendb (19);                          {WAITMS opcode}
+  sendb (109);                         {ms to wait - 1}
+
+  sendb (18);                          {SENDU opcode}
+  sendb (tk.len);                      {number of data byte - 1}
+  sendb (i1);                          {Hardlock command opcode}
+  for i2 := 1 to tk.len do begin       {send any data bytes}
+    sendb (ord(tk.str[i2]));
+    end;
   send_release;
   end;
 {
