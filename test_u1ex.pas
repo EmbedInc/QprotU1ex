@@ -1158,6 +1158,14 @@ next_rsp:                              {back here to read each new response pack
   unlockout;
   end;
 {
+*   PONG
+}
+11: begin
+  lockout;
+  writeln ('Pong');
+  unlockout;
+  end;
+{
 *   Unrecognized response opcode.
 }
 otherwise
@@ -1308,7 +1316,7 @@ done_opts:                             {done with all the command line options}
   string_append_token (cmds, string_v('W')); {21}
   string_append_token (cmds, string_v('T')); {22}
   string_append_token (cmds, string_v('HL')); {23}
-
+  string_append_token (cmds, string_v('PING')); {24}
 
 loop_cmd:                              {back here each new input line}
   sendall;                             {make sure all previous buffered data is sent}
@@ -1346,6 +1354,9 @@ loop_cmd:                              {back here each new input line}
   writeln;
   writeln ('? or HELP   - Show this list of commands');
   writeln ('Q           - Quit the program');
+  if fwver >= 20 then begin
+    writeln ('PING        - Sends PONG response');
+    end;
   writeln ('S chars     - Remaining characters sent as ASCII');
   writeln ('H hex ... hex - Data bytes, tokens interpreted in hexadecimal');
   writeln ('val ... "chars" - Integer bytes or chars, chars must be quoted, "" or ''''');
@@ -1772,6 +1783,14 @@ otherwise
   for i2 := 1 to tk.len do begin       {send any data bytes}
     sendb (ord(tk.str[i2]));
     end;
+  send_release;
+  end;
+{
+*   PING
+}
+24: begin
+  send_acquire;
+  sendb (20);                          {PING opcode}
   send_release;
   end;
 {

@@ -795,4 +795,18 @@ waitms_chtick unbank         ;back here to check for another tick
 
          return
 
+;*******************************************************************************
+;
+;   Command PING
+;
+;   Send the PONG response.
+;
+         command ping
+
+         lockout
+         putk8   11          ;send PONG response opcode
+         unlockout
+
+         return
+
          end

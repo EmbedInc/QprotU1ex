@@ -1,5 +1,5 @@
                          Embed Inc U1EX Firmware
-                               25 May 2022
+                               27 May 2022
 
 The purpose of the U1EX firmware is to provide a example of using the
 Embed Inc USB drivers for the USB peripheral of a Microchip PIC 18F2550
@@ -185,6 +185,10 @@ Commands
     the limit of the input buffer), but they will not be executed until
     the wait time elapses.
 
+  PING: 20
+
+    Sends the PONG response.
+
 
 Responses
 
@@ -312,6 +316,10 @@ Responses
   RECVU: 10 b
 
     Reports that the byte B was received by the UART.
+
+  PONG: 11
+
+    Sent in response to the PING command.
 
 
 Firmware versions
@@ -482,3 +490,7 @@ Firmware versions
 
     Added commands SENDU, WAITMS.  Added response RECVU.  Fixed UART
     sending bug.
+
+  U1EX 20
+
+    Added PING command.  Added PONG response.
