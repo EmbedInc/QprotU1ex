@@ -1,5 +1,5 @@
                          Embed Inc U1EX Firmware
-                               27 May 2022
+                              10 June 2022
 
 The purpose of the U1EX firmware is to provide a example of using the
 Embed Inc USB drivers for the USB peripheral of a Microchip PIC 18F2550
@@ -491,6 +491,6 @@ Firmware versions
     Added commands SENDU, WAITMS.  Added response RECVU.  Fixed UART
     sending bug.
 
-  U1EX 20
+  U1EX 20 seq 2, 10 Jun 2022
 
     Added PING command.  Added PONG response.
